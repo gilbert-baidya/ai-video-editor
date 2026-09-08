@@ -7,6 +7,7 @@ export interface FoundationProps extends Record<string, unknown> {
   sourcePath: string;
   editPlan: EditPlan;
   graphicFontSize: number;
+  durationSeconds?: number;
   mediaAssets?: MediaAsset[];
 }
 

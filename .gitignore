@@ -1,0 +1,30 @@
+node_modules/
+artifacts/
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.log
+
+local-media-proof/
+
+# Large media and generated video
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.avi
+*.mkv
+
+# Local AI/model material
+models/
+*.ggml
+*.gguf
+*.onnx
+
+# Caches and temporary output
+.cache/
+cache/
+tmp/
+temp/

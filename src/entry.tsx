@@ -7,6 +7,7 @@ export const RemotionRoot: React.FC = () => (
     id="BanglaFoundation"
     component={FoundationComposition}
     durationInFrames={120 * 30}
+    calculateMetadata={({ props }) => ({ durationInFrames: Math.ceil((props.durationSeconds ?? 120) * 30) })}
     fps={30}
     width={1920}
     height={1080}

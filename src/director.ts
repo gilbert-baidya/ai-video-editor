@@ -87,6 +87,11 @@ function stringValue(value: unknown, name: string): string {
   return value;
 }
 
+function optionalStringValue(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  return stringValue(value, name);
+}
+
 function numberValue(value: unknown, name: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} must be a finite number.`);
   return value;
@@ -114,8 +119,8 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
       endSegment,
       intensity,
       visualRecommendation,
-      suggestedDisplayText: item.suggestedDisplayText === undefined ? undefined : stringValue(item.suggestedDisplayText, `sections[${index}].suggestedDisplayText`),
-      scriptureReference: item.scriptureReference === undefined ? undefined : stringValue(item.scriptureReference, `sections[${index}].scriptureReference`),
+      suggestedDisplayText: optionalStringValue(item.suggestedDisplayText, `sections[${index}].suggestedDisplayText`),
+      scriptureReference: optionalStringValue(item.scriptureReference, `sections[${index}].scriptureReference`),
       confidence,
       reason: stringValue(item.reason, `sections[${index}].reason`),
     };
@@ -359,7 +364,8 @@ export function validateDirector(analysis: SermonAnalysis, beats: VideoBeat[], p
   if (analysis.sections.some((item) => item.start < 0 || item.end <= item.start || item.end > duration)) failures.push('analysis: invalid section range');
   const density = beats.filter((beat) => beat.visualType !== 'none' && beat.visualType !== 'speaker-full').length / Math.max(duration / 60, 1);
   if (density > 8) failures.push(`director: event density ${density.toFixed(2)} per minute is too high`);
-  for (let index = 1; index < beats.length; index += 1) if (beats[index].visualType === beats[index - 1].visualType && beats[index].start - beats[index - 1].end < 10) failures.push(`${beats[index].id}: repeated visual type too close to previous beat`);
+  const repeatableNoChange = new Set<VisualRecommendation>(['none', 'speaker-full']);
+  for (let index = 1; index < beats.length; index += 1) if (!repeatableNoChange.has(beats[index].visualType) && beats[index].visualType === beats[index - 1].visualType && beats[index].start - beats[index - 1].end < 10) failures.push(`${beats[index].id}: repeated visual type too close to previous beat`);
   return failures;
 }
 
