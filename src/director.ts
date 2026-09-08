@@ -49,7 +49,7 @@ export interface ProviderAttempt {
 }
 
 export interface DirectorProviderResult {
-  providerResult: 'ai-success' | 'ai-retry-success' | 'deterministic-fallback';
+  providerResult: 'ai-success' | 'ai-retry-success' | 'provider-unavailable' | 'provider-failure' | 'deterministic-fallback';
   provider: string;
   model: string;
   runtimeMs: number;
@@ -57,6 +57,12 @@ export interface DirectorProviderResult {
   rawResponses: Array<{ attempt: number; field: 'response' | 'thinking'; text: string }>;
   analysis?: SermonAnalysis;
   error?: string;
+}
+
+export interface DirectorProviderAvailability {
+  available: boolean;
+  reason?: string;
+  checkedAt: string;
 }
 
 export interface DirectorProviderConfig {
@@ -70,8 +76,12 @@ export interface DirectorProviderConfig {
 export interface DirectorProvider {
   name: string;
   model: string;
+  cacheIdentity: string;
+  checkAvailability?(): Promise<DirectorProviderAvailability>;
   analyze(input: DirectorInput): Promise<DirectorProviderResult>;
 }
+
+export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.1';
 
 const sectionTypes = new Set<SermonSectionType>(['introduction', 'scripture-reading', 'teaching', 'main-point', 'illustration', 'story', 'testimony', 'question', 'application', 'transition', 'prayer', 'emotional-ministry', 'conclusion', 'altar-call']);
 const intensities = new Set<VisualIntensity>(['reverent-calm', 'normal-teaching', 'story-illustration', 'emphasis']);
@@ -148,12 +158,13 @@ export function validateDirectorInput(input: DirectorInput): void {
 function resolveSection(aiSection: AISermonSection, index: number, segments: TranscriptSegment[]): SermonSection {
   const selected = segments.slice(aiSection.startSegment, aiSection.endSegment + 1);
   if (!selected.length || selected.length !== aiSection.endSegment - aiSection.startSegment + 1) throw new Error(`Cannot resolve AI segment range ${aiSection.startSegment}-${aiSection.endSegment}.`);
+  const sourceSegmentIds = selected.map((segment) => segment.id);
   return {
-    id: `section-${index + 1}`,
+    id: `section-${sha256(sourceSegmentIds.join('|')).slice(0, 12)}`,
     start: selected[0].start,
     end: selected[selected.length - 1].end,
     transcriptText: selected.map((segment) => segment.text).join(' '),
-    sourceSegmentIds: selected.map((segment) => segment.id),
+    sourceSegmentIds,
     type: aiSection.sectionType,
     intensity: aiSection.intensity,
     suggestedDisplayText: aiSection.suggestedDisplayText,
@@ -193,8 +204,8 @@ export function resolveAIResponse(response: AISermonResponse, input: DirectorInp
   };
 }
 
-function promptFor(input: DirectorInput): string {
-  const segments = input.segments.map((segment, index) => JSON.stringify({ index, start: segment.start, end: segment.end, text: segment.text })).join('\n');
+export function promptFor(input: DirectorInput): string {
+  const segments = input.segments.map((segment, index) => JSON.stringify({ index, canonicalId: segment.id, text: segment.text })).join('\n');
   return [
     'You are a reverent Bengali sermon semantic extractor.',
     'Return only one JSON object. Do not include markdown, prose, timestamps, project IDs, or source IDs.',
@@ -212,6 +223,7 @@ function promptFor(input: DirectorInput): string {
 export class OllamaDirectorProvider implements DirectorProvider {
   name = 'ollama';
   model: string;
+  cacheIdentity: string;
   private endpoint: string;
   private timeoutMs: number;
   private maxAttempts: number;
@@ -223,6 +235,40 @@ export class OllamaDirectorProvider implements DirectorProvider {
     this.timeoutMs = config.timeoutMs ?? 900_000;
     this.maxAttempts = config.attempts ?? 2;
     this.disableThinking = config.disableThinking ?? true;
+    this.cacheIdentity = sha256(JSON.stringify({
+      adapter: 'ollama-director-v1.1',
+      endpoint: this.endpoint,
+      model: this.model,
+      timeoutMs: this.timeoutMs,
+      attempts: this.maxAttempts,
+      disableThinking: this.disableThinking,
+      promptSchema: DIRECTOR_PROMPT_SCHEMA_VERSION,
+    }));
+  }
+
+  async checkAvailability(): Promise<DirectorProviderAvailability> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 5_000));
+    try {
+      const response = await fetch(`${this.endpoint}/api/tags`, { signal: controller.signal });
+      if (!response.ok) return { available: false, reason: `Ollama health check returned HTTP ${response.status}.`, checkedAt: new Date().toISOString() };
+      const payload = await response.json() as { models?: Array<{ name?: string; model?: string }> };
+      const models = payload.models?.map((item) => item.name ?? item.model).filter((item): item is string => Boolean(item)) ?? [];
+      const available = models.some((item) => item === this.model || item.startsWith(`${this.model}:`));
+      return {
+        available,
+        reason: available ? undefined : `Ollama is reachable, but model ${this.model} is not installed.`,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        available: false,
+        reason: error instanceof Error ? `Ollama is unavailable: ${error.message}` : `Ollama is unavailable: ${String(error)}`,
+        checkedAt: new Date().toISOString(),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
@@ -275,7 +321,7 @@ export class OllamaDirectorProvider implements DirectorProvider {
         attempts.push(record);
       }
     }
-    return { providerResult: 'deterministic-fallback', provider: this.name, model: this.model, runtimeMs: Date.now() - started, attempts, rawResponses, analysis: deterministicFallbackAnalysis(input), error: lastError };
+    return { providerResult: 'provider-failure', provider: this.name, model: this.model, runtimeMs: Date.now() - started, attempts, rawResponses, error: lastError };
   }
 }
 

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { readJson, sha256, writeJson, ensureDirectory } from '../src/foundation.ts';
 import type { SermonAnalysis, TranscriptDocument, TranscriptSegment } from '../src/contracts.ts';
 import { OllamaDirectorProvider, createDirectorEditPlan, directorDependencyNames, generateVisualBeats, resolveAIResponse, validateAIResponse, validateDirector, type AISermonResponse, type DirectorInput, type DirectorProviderResult } from '../src/director.ts';
+import { executeDirector } from '../src/director-execution.ts';
 
 interface SourceSegment { startTime: number; endTime: number; text: string }
 interface SourceTranscript { segments: SourceSegment[] }
@@ -68,9 +69,17 @@ async function main(): Promise<void> {
   const canonicalHashBefore = sha256(fixture.transcript.originalTranscript);
   const runs: Array<{ run: number; result: DirectorProviderResult; analysis: SermonAnalysis; fallbackUsed: boolean }> = [];
   for (let run = 1; run <= runCount; run += 1) {
-    const result = await new OllamaDirectorProvider({ model, attempts: providerAttempts, disableThinking: true }).analyze(input);
-    const fallbackUsed = result.providerResult === 'deterministic-fallback';
-    runs.push({ run, result, analysis: result.analysis ?? fallbackAnalysis(input), fallbackUsed });
+    const execution = await executeDirector(input, { provider: new OllamaDirectorProvider({ model, attempts: providerAttempts, disableThinking: true }) });
+    const result = execution.providerResult ?? {
+      providerResult: 'deterministic-fallback' as const,
+      provider: execution.provenance.provider,
+      model: execution.provenance.model ?? 'canonical-segment-safe-v1.1',
+      runtimeMs: execution.provenance.durationMs,
+      attempts: execution.provenance.attempts,
+      rawResponses: [],
+      analysis: execution.analysis,
+    };
+    runs.push({ run, result, analysis: execution.analysis, fallbackUsed: execution.provenance.fallbackUsed });
   }
   const successful = runs.find((run) => !run.fallbackUsed);
   const selected = successful ?? runs[0];

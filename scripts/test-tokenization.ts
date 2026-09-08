@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { readJson, writeJson } from '../src/foundation.js';
+import { ensureDirectory, readJson, writeJson } from '../src/foundation.js';
 
 interface Corpus { phrases: Array<{ text: string; category: string }> }
 
@@ -14,6 +14,7 @@ function graphemes(text: string): string[] {
 }
 
 async function main(): Promise<void> {
+  await ensureDirectory(join(root, '..', 'artifacts'));
   const corpus = await readJson<Corpus>(join(root, '..', 'fixtures', 'bangla-alignment-corpus.json'));
   const results = corpus.phrases.map((phrase) => {
     const graphemeClusters = graphemes(phrase.text);

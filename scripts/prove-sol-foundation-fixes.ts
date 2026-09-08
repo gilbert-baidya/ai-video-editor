@@ -7,6 +7,7 @@ import { decideBroll, rankMediaCandidates } from '../src/broll-selection.ts';
 import type { BrollDecision, BrollIntent, EditPlan, MediaLibraryRoot, PlacementDecision, SermonAnalysis, TranscriptDocument } from '../src/contracts.ts';
 import { applyRetentionPolicy } from '../src/visual-policy.ts';
 import { deterministicFallbackAnalysis, generateVisualBeats, OllamaDirectorProvider, validateAIResponse, validateDirectorInput, type DirectorInput } from '../src/director.ts';
+import { executeDirector } from '../src/director-execution.ts';
 import { createQa, ensureDirectory, sha256, writeJson } from '../src/foundation.ts';
 import { indexLocalMedia, MEDIA_INDEXER_VERSION, normalizeMediaSearchTerms } from '../src/media-library.ts';
 import { PLACEMENT_ALGORITHM_VERSION, representativeSampleTimes, resolveBrollPlacement, resolveVisualPlacements, TEXT_FIT_ALGORITHM_VERSION, VISUAL_SAMPLING_VERSION } from '../src/visual-intelligence.ts';
@@ -166,9 +167,9 @@ async function main(): Promise<void> {
       { sectionType: 'main-point', startSegment: 1, endSegment: 1, intensity: 'emphasis', visualRecommendation: 'keyword-graphic', confidence: 0.8, reason: 'Overlap.' },
     ] }, 2), /ordered and non-overlapping/);
     assert.ok(deterministicFallbackAnalysis(validInput).sections.length > 0);
-    const providerFallback = await new OllamaDirectorProvider({ endpoint: 'http://127.0.0.1:1', attempts: 1, timeoutMs: 100 }).analyze(validInput);
-    assert.equal(providerFallback.providerResult, 'deterministic-fallback');
-    assert.ok(providerFallback.analysis?.sections.length);
+    const providerFallback = await executeDirector(validInput, { provider: new OllamaDirectorProvider({ endpoint: 'http://127.0.0.1:1', attempts: 1, timeoutMs: 100 }) });
+    assert.equal(providerFallback.provenance.source, 'deterministic-fallback');
+    assert.ok(providerFallback.analysis.sections.length);
 
     const qaPlan: EditPlan = { schemaVersion: 'proof', projectId: validInput.projectId, sourceTranscriptHash: sha256(validInput.transcript.originalTranscript), operations: [], status: 'draft', createdBy: { provider: 'proof', model: 'proof' } };
     assert.equal(createQa(validInput.transcript, qaPlan, validInput.projectDuration).passed, false);

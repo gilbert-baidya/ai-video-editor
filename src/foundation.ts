@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type {
   ArtifactDependency,
@@ -18,6 +19,28 @@ const exec = promisify(execFile);
 const ignoredWhisperTokens = new Set(['[_BEG_]', '[_END_]', '[_TT_150]', '[_TT_250]']);
 
 export const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
+
+export async function fileVersionFingerprint(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+export async function directoryContentFingerprint(path: string, extensions: string[] = []): Promise<string> {
+  const files: string[] = [];
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const child = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) await visit(child);
+      else if (entry.isFile() && (!extensions.length || extensions.some((extension) => entry.name.endsWith(extension)))) files.push(child);
+    }
+  }
+  await visit(path);
+  const identities = [];
+  for (const file of files) identities.push({ file: file.slice(path.length + 1), hash: await fileVersionFingerprint(file) });
+  return sha256(JSON.stringify(identities));
+}
 
 export async function run(command: string, args: string[]): Promise<string> {
   const result = await exec(command, args, { maxBuffer: 50 * 1024 * 1024 });

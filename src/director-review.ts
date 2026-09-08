@@ -9,6 +9,8 @@ import type {
   SermonAnalysis,
   SermonSection,
 } from './contracts.ts';
+import type { DirectorExecutionProvenance, DirectorExecutionSource } from './director-execution.ts';
+import { sha256 } from './foundation.ts';
 
 function validateReviewPlan(plan: EditPlan, duration: number): string[] {
   const failures: string[] = [];
@@ -38,6 +40,8 @@ export interface ReviewDecision {
   approvedDisplayText?: string;
   reviewedAt?: string;
   safeNoChange?: boolean;
+  originalProvenance: DirectorExecutionSource;
+  provenance: DirectorExecutionSource | 'human-override';
 }
 
 export interface ReviewState {
@@ -57,6 +61,7 @@ export interface ReviewBeat {
   candidates: Array<MediaCandidate & { asset?: MediaAsset }>;
   requiredReview: boolean;
   noBroll: boolean;
+  provenance?: DirectorExecutionProvenance;
 }
 
 export interface ReviewReadiness {
@@ -78,6 +83,7 @@ export interface ReviewWorkspaceData {
     sourceEnd: number;
   };
   analysis: SermonAnalysis;
+  directorExecution?: DirectorExecutionProvenance;
   aiPlan: EditPlan;
   mediaIndex: MediaIndex;
   beats: ReviewBeat[];
@@ -109,21 +115,26 @@ export function operationForBeat(plan: EditPlan, beatId: string): EditOperation 
   return plan.operations.find((operation) => operationBeatId(operation) === beatId);
 }
 
-export function createInitialReviewState(data: Pick<ReviewWorkspaceData, 'projectId' | 'aiPlan' | 'beats'>, sourceEditPlanHash: string): ReviewState {
+export function createInitialReviewState(data: Pick<ReviewWorkspaceData, 'projectId' | 'aiPlan' | 'beats' | 'directorExecution'>, sourceEditPlanHash: string): ReviewState {
   const now = new Date().toISOString();
   return {
     schemaVersion: '1.0',
     projectId: data.projectId,
     sourceEditPlanHash,
-    decisions: data.beats.map((beat) => ({
-      beatId: beat.section.id,
-      status: beat.requiredReview ? 'pending' : 'accepted',
-      originalOperation: beat.originalOperation,
-      reviewedOperation: beat.requiredReview ? undefined : beat.originalOperation,
-      reviewerReason: beat.requiredReview ? undefined : 'No visual operation: speaker-led state is preserved by policy.',
-      safeNoChange: !beat.requiredReview,
-      reviewedAt: beat.requiredReview ? undefined : now,
-    })),
+    decisions: data.beats.map((beat) => {
+      const originalProvenance = beat.provenance?.source ?? data.directorExecution?.source ?? (data.aiPlan.createdBy.provider.includes('deterministic') ? 'deterministic-fallback' : 'ai');
+      return {
+        beatId: beat.section.id,
+        status: beat.requiredReview ? 'pending' : 'accepted',
+        originalOperation: beat.originalOperation,
+        reviewedOperation: beat.requiredReview ? undefined : beat.originalOperation,
+        reviewerReason: beat.requiredReview ? undefined : 'No visual operation: speaker-led state is preserved by policy.',
+        safeNoChange: !beat.requiredReview,
+        originalProvenance,
+        provenance: originalProvenance,
+        reviewedAt: beat.requiredReview ? undefined : now,
+      };
+    }),
     updatedAt: now,
   };
 }
@@ -135,6 +146,8 @@ function reviewedOperationFor(decision: ReviewDecision): EditOperation | undefin
 }
 
 export function deriveApprovedEditPlan(aiPlan: EditPlan, review: ReviewState, status: EditPlan['status'] = 'approved'): EditPlan {
+  if (review.projectId !== aiPlan.projectId) throw new Error('Review project does not match the Edit Plan.');
+  if (review.sourceEditPlanHash !== sha256(JSON.stringify(aiPlan))) throw new Error('Review state belongs to a different Edit Plan.');
   const decisions = new Map(review.decisions.map((decision) => [decision.beatId, decision]));
   const operations = aiPlan.operations.flatMap((operation) => {
     const beatId = operationBeatId(operation);
@@ -145,15 +158,24 @@ export function deriveApprovedEditPlan(aiPlan: EditPlan, review: ReviewState, st
   return { ...aiPlan, operations, status };
 }
 
+export function isReviewStateCompatible(data: Pick<ReviewWorkspaceData, 'projectId' | 'aiPlan'>, value: unknown): value is ReviewState {
+  if (!value || typeof value !== 'object') return false;
+  const review = value as Partial<ReviewState>;
+  return review.schemaVersion === '1.0'
+    && review.projectId === data.projectId
+    && review.sourceEditPlanHash === sha256(JSON.stringify(data.aiPlan))
+    && Array.isArray(review.decisions);
+}
+
 export function applyReviewAction(state: ReviewState, beatId: string, action: ReviewAction, options: { operation?: EditOperation; displayText?: string; reason?: string } = {}): ReviewState {
   const decisions: ReviewDecision[] = state.decisions.map((decision): ReviewDecision => {
     if (decision.beatId !== beatId) return decision;
     const now = new Date().toISOString();
-    if (action === 'revert') return { ...decision, status: (decision.safeNoChange ? 'accepted' : 'pending') as ReviewStatus, reviewedOperation: decision.safeNoChange ? decision.originalOperation : undefined, approvedDisplayText: undefined, reviewerReason: decision.safeNoChange ? 'No visual operation: speaker-led state is preserved by policy.' : undefined, reviewedAt: decision.safeNoChange ? now : undefined };
-    if (action === 'accept') return { ...decision, status: 'accepted', reviewedOperation: decision.originalOperation, reviewerReason: options.reason ?? 'Accepted the resolved AI operation.', reviewedAt: now };
-    if (action === 'reject' || action === 'keep-pastor') return { ...decision, status: 'rejected', reviewedOperation: undefined, reviewerReason: options.reason ?? 'Keep Pastor: remove the proposed visual takeover and preserve the speaker-led state.', reviewedAt: now };
-    if (action === 'modify' || action === 'replace-broll') return { ...decision, status: 'modified', reviewedOperation: options.operation ?? decision.originalOperation, reviewerReason: options.reason ?? 'Modified during human review.', reviewedAt: now };
-    if (action === 'approve-text') return { ...decision, status: decision.status === 'pending' ? 'modified' : decision.status, reviewedOperation: decision.reviewedOperation ?? decision.originalOperation, approvedDisplayText: options.displayText?.trim(), reviewerReason: options.reason ?? 'Display text explicitly approved by the reviewer.', reviewedAt: now };
+    if (action === 'revert') return { ...decision, status: (decision.safeNoChange ? 'accepted' : 'pending') as ReviewStatus, reviewedOperation: decision.safeNoChange ? decision.originalOperation : undefined, approvedDisplayText: undefined, reviewerReason: decision.safeNoChange ? 'No visual operation: speaker-led state is preserved by policy.' : undefined, reviewedAt: decision.safeNoChange ? now : undefined, provenance: decision.originalProvenance ?? 'ai' };
+    if (action === 'accept') return { ...decision, status: 'accepted', reviewedOperation: decision.originalOperation, reviewerReason: options.reason ?? 'Accepted the resolved Director operation.', reviewedAt: now, provenance: 'human-override' };
+    if (action === 'reject' || action === 'keep-pastor') return { ...decision, status: 'rejected', reviewedOperation: undefined, reviewerReason: options.reason ?? 'Keep Pastor: remove the proposed visual takeover and preserve the speaker-led state.', reviewedAt: now, provenance: 'human-override' };
+    if (action === 'modify' || action === 'replace-broll') return { ...decision, status: 'modified', reviewedOperation: options.operation ?? decision.originalOperation, reviewerReason: options.reason ?? 'Modified during human review.', reviewedAt: now, provenance: 'human-override' };
+    if (action === 'approve-text') return { ...decision, status: decision.status === 'pending' ? 'modified' : decision.status, reviewedOperation: decision.reviewedOperation ?? decision.originalOperation, approvedDisplayText: options.displayText?.trim(), reviewerReason: options.reason ?? 'Display text explicitly approved by the reviewer.', reviewedAt: now, provenance: 'human-override' };
     return decision;
   });
   return { ...state, decisions, updatedAt: new Date().toISOString() };

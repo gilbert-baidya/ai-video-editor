@@ -5,13 +5,16 @@ import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition, type RenderMediaProgress } from '@remotion/renderer';
 import { build } from 'esbuild';
 import { applyReviewAction, createInitialReviewState, deriveApprovedEditPlan, updateReview, type ReviewWorkspaceData } from '../src/director-review.ts';
+import type { DirectorExecutionProvenance } from '../src/director-execution.ts';
+import { validateResolvedDirectorAnalysis } from '../src/director-execution.ts';
+import { canonicalTranscriptHash } from '../src/sermon-chunking.ts';
 import { buildBrollIntents, decideBroll } from '../src/broll-selection.ts';
 import { generateVisualBeats, validateDirector, createDirectorEditPlan, type DirectorInput } from '../src/director.ts';
 import type { BrollDecision, EditOperation, EditPlan, MediaAsset, MediaIndex, MediaUsageHistory, PlacementDecision, SermonAnalysis, TranscriptDocument, VisualFrameAnalysis } from '../src/contracts.ts';
 import { applyRetentionPolicy, type VisualPolicyResult } from '../src/visual-policy.ts';
 import { applyRetentionToBrollIntents, createPlacedBrollOperations, type PreviewWindow } from '../src/broll-preview.ts';
 import { representativeSampleTimes, resolveBrollPlacement, resolveVisualPlacements, validatePlacements, VISUAL_SAMPLING_VERSION } from '../src/visual-intelligence.ts';
-import { ensureDirectory, extractSample, readJson, run, sha256, validatePlan, writeJson } from '../src/foundation.ts';
+import { directoryContentFingerprint, ensureDirectory, extractSample, fileVersionFingerprint, readJson, run, sha256, validatePlan, writeJson } from '../src/foundation.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const publicDir = resolve(root, 'public');
@@ -56,7 +59,7 @@ async function frame(video: string, output: string, time: number) {
   return { output, time, bytes: info.size, hash: sha256(await readFile(output)), present: info.size > 0 };
 }
 
-async function visualAnalysis(analysis: SermonAnalysis, policy: VisualPolicyResult, decisions: BrollDecision[]) {
+async function visualAnalysis(analysis: SermonAnalysis, policy: VisualPolicyResult, decisions: BrollDecision[], sourceFingerprint: string) {
   const directory = resolve(artifacts, 'frames/visual-source');
   await ensureDirectory(directory);
   const visualRecords = policy.records.filter((record) => !['none', 'speaker-full', 'keep-current'].includes(record.resolvedDecision));
@@ -69,8 +72,7 @@ async function visualAnalysis(analysis: SermonAnalysis, policy: VisualPolicyResu
     }),
   ].filter((item, index, all) => all.findIndex((other) => other.beatId === item.beatId && other.time === item.time) === index)
     .map((item) => ({ ...item, imagePath: resolve(directory, `${item.beatId}-${String(item.time).replace('.', '_')}.png`) }));
-  const sourceHash = sha256(await readFile(source));
-  const cacheKey = sha256(JSON.stringify(sampleSpecs.map(({ beatId, time }) => ({ beatId, time }))) + sourceHash + VISUAL_SAMPLING_VERSION);
+  const cacheKey = sha256(JSON.stringify(sampleSpecs.map(({ beatId, time }) => ({ beatId, time }))) + sourceFingerprint + VISUAL_SAMPLING_VERSION);
   const cachePath = resolve(artifacts, 'visual-analysis-cache.json');
   const cached = await readJson<{ cacheKey: string; frames: VisualFrameAnalysis[] }>(cachePath).catch(() => undefined);
   if (cached?.cacheKey === cacheKey) return { frames: cached.frames, cache: { hit: true, key: cacheKey }, samples: sampleSpecs };
@@ -95,16 +97,16 @@ async function renderComposition(serveUrl: string, sourcePath: string, plan: Edi
   return { wallMs: performance.now() - started, renderedDoneInMs: progress?.renderedDoneIn ?? null, encodedDoneInMs: progress?.encodedDoneIn ?? null };
 }
 
-function workspaceData(analysis: SermonAnalysis, plan: EditPlan, index: MediaIndex, decisions: BrollDecision[], placements: PlacementDecision[], initialReview: ReturnType<typeof createInitialReviewState>, qa: ReviewWorkspaceData['qa']): ReviewWorkspaceData {
+function workspaceData(analysis: SermonAnalysis, plan: EditPlan, index: MediaIndex, decisions: BrollDecision[], placements: PlacementDecision[], initialReview: ReturnType<typeof createInitialReviewState>, qa: ReviewWorkspaceData['qa'], directorExecution: DirectorExecutionProvenance, sectionProvenance: Record<string, DirectorExecutionProvenance>): ReviewWorkspaceData {
   return {
     projectId: analysis.projectId, title: analysis.title ?? 'হস্তক্ষেপ | INTERVENTION', languageProfile: 'bn',
     preview: { controlUrl: './bounded/main-control.mp4', directorUrl: './bounded/main-director.mp4', durationSeconds: duration, sourceStart: 0, sourceEnd: duration },
-    analysis, aiPlan: plan, mediaIndex: index,
+    analysis, directorExecution, aiPlan: plan, mediaIndex: index,
     beats: analysis.sections.map((section) => {
       const brollDecision = decisions.find((decision) => decision.intent.sectionId === section.id);
       const selectedAsset = brollDecision?.selectedAssetId ? index.assets.find((asset) => asset.id === brollDecision.selectedAssetId) : undefined;
       const originalOperation = plan.operations.find((operation) => operation.id === `visual-${section.id}` || operation.id === `broll-${section.id}`);
-      return { section, originalOperation, brollDecision, selectedAsset, placement: placements.find((placement) => placement.beatId === section.id), candidates: (brollDecision?.candidates ?? []).map((candidate) => ({ ...candidate, asset: index.assets.find((asset) => asset.id === candidate.assetId) })), requiredReview: Boolean(originalOperation), noBroll: brollDecision?.decision !== 'selected' };
+      return { section, provenance: sectionProvenance[section.id], originalOperation, brollDecision, selectedAsset, placement: placements.find((placement) => placement.beatId === section.id), candidates: (brollDecision?.candidates ?? []).map((candidate) => ({ ...candidate, asset: index.assets.find((asset) => asset.id === candidate.assetId) })), requiredReview: Boolean(originalOperation), noBroll: brollDecision?.decision !== 'selected' };
     }),
     qa, initialReview,
     evidence: { explanationChain: './explanation-chain.json', placementEvidence: './placement-evidence.json', beforeFrame: './frames/before.png', duringFrame: './frames/during.png', afterFrame: './frames/after.png' },
@@ -114,12 +116,19 @@ function workspaceData(analysis: SermonAnalysis, plan: EditPlan, index: MediaInd
 async function main() {
   await Promise.all(['bounded', 'frames', 'frames/final', 'review', 'review-assets'].map((name) => ensureDirectory(resolve(artifacts, name))));
   const transcript = await readJson<TranscriptDocument>(resolve(v1, 'transcript.json'));
-  const liveResult = await readJson<{ allChunksLive: boolean; fallbackChunkCount: number; analysis: SermonAnalysis; configHash: string }>(resolve(artifacts, 'analysis/live-ai-result.json'));
-  if (!liveResult.allChunksLive || liveResult.fallbackChunkCount) throw new Error('Full render is gated on fallback-free live AI chunks.');
-  const analysis = liveResult.analysis;
+  const liveResult = await readJson<{ allChunksLive: boolean; fallbackChunkCount: number; analysis: SermonAnalysis; architectureVersion: string; configHash: string; configuration: Record<string, unknown>; transcriptHash: string; provenance: DirectorExecutionProvenance; sectionProvenance: Record<string, DirectorExecutionProvenance>; chunks: Array<{ structuredOutput: boolean; fallback: boolean }> }>(resolve(artifacts, 'analysis/live-ai-result.json'));
   const transcriptHash = sha256(transcript.originalTranscript);
+  const canonicalHash = canonicalTranscriptHash(transcript);
+  const sourceFingerprint = await fileVersionFingerprint(source);
+  if (liveResult.architectureVersion !== 'provider-neutral-v1.1') throw new Error('Live Director artifact uses an unsupported architecture version.');
+  if (liveResult.transcriptHash !== canonicalHash) throw new Error('Live Director artifact belongs to a different canonical transcript.');
+  if (liveResult.configHash !== sha256(JSON.stringify(liveResult.configuration))) throw new Error('Live Director configuration hash is invalid.');
+  if (!liveResult.allChunksLive || liveResult.fallbackChunkCount || liveResult.provenance.source !== 'ai' || liveResult.provenance.schemaValidation !== 'PASS' || liveResult.provenance.canonicalRangeValidation !== 'PASS' || liveResult.chunks.some((chunk) => chunk.fallback || !chunk.structuredOutput)) throw new Error('Full render is gated on fallback-free, schema-valid, canonical-range-valid live AI chunks.');
+  const analysis = liveResult.analysis;
   const input: DirectorInput = { transcript, segments: transcript.segments, projectDuration: duration, projectId: transcript.projectId };
-  const directorFailures = validateDirector(analysis, generateVisualBeats(analysis), createDirectorEditPlan(generateVisualBeats(analysis), input, 'ollama', 'qwen3:30b'), duration);
+  const resolvedAnalysisFailures = validateResolvedDirectorAnalysis(analysis, input);
+  if (resolvedAnalysisFailures.length) throw new Error(`Live analysis canonical validation failed: ${resolvedAnalysisFailures.join('; ')}`);
+  const directorFailures = validateDirector(analysis, generateVisualBeats(analysis), createDirectorEditPlan(generateVisualBeats(analysis), input, liveResult.provenance.provider, liveResult.provenance.model ?? 'unknown'), duration);
   if (directorFailures.length) throw new Error(`Live analysis did not validate: ${directorFailures.join('; ')}`);
 
   const index = await readJson<MediaIndex>(resolve(v1, 'media-index/index.json'));
@@ -131,7 +140,7 @@ async function main() {
   const history: MediaUsageHistory[] = [];
   const decisions = retained.map((intent) => decideBroll(index, intent, history));
   const selectedIds = new Set(decisions.flatMap((decision) => decision.selectedAssetId ? [decision.selectedAssetId] : []));
-  const visual = await visualAnalysis(analysis, policy, decisions);
+  const visual = await visualAnalysis(analysis, policy, decisions, sourceFingerprint);
   const graphicPlacements = resolveVisualPlacements(normalizePolicy(policy), analysis, visual.frames);
   const brollPlacements = decisions.filter((decision) => decision.decision === 'selected').map((decision) => {
     const asset = index.assets.find((item) => item.id === decision.selectedAssetId);
@@ -140,14 +149,14 @@ async function main() {
   const placements = [...graphicPlacements.decisions, ...brollPlacements];
   const brollOperations = createPlacedBrollOperations(decisions, placements, { sourceStart: 0, sourceEnd: duration });
   const operations = [...normalizeOperationIds(graphicPlacements.editPlan.operations.filter((operation) => operation.type !== 'director-placeholder'), analysis), ...brollOperations].sort((a, b) => a.start - b.start);
-  const planDraft: EditPlan = { schemaVersion: '4.1', projectId: transcript.projectId, sourceTranscriptHash: transcriptHash, operations, status: 'draft', createdBy: { provider: 'ollama-live-long-form-merge', model: 'qwen3:30b' } };
+  const planDraft: EditPlan = { schemaVersion: '4.1', projectId: transcript.projectId, sourceTranscriptHash: transcriptHash, operations, status: 'draft', createdBy: { provider: liveResult.provenance.provider, model: liveResult.provenance.model ?? 'unknown' } };
   const planFailures = validatePlan(planDraft, duration);
   const plan: EditPlan = { ...planDraft, status: planFailures.length ? 'draft' : 'validated' };
   if (planFailures.length) throw new Error(`AI Edit Plan invalid: ${planFailures.join('; ')}`);
   const placementFailures = validatePlacements({ decisions: placements, editPlan: plan }, visual.frames);
   const qa: ReviewWorkspaceData['qa'] = { status: placementFailures.length ? 'FAIL' : 'PASS', failures: placementFailures, rightsSafe: decisions.filter((decision) => decision.decision === 'selected').every((decision) => index.assets.find((asset) => asset.id === decision.selectedAssetId)?.rightsStatus !== 'unknown'), brollAudioMuted: plan.operations.filter((operation) => operation.type === 'broll').every((operation) => operation.muted), noBrollCount: decisions.filter((decision) => decision.decision !== 'selected').length };
 
-  const skeleton = workspaceData(analysis, plan, index, decisions, placements, { schemaVersion: '1.0', projectId: transcript.projectId, sourceEditPlanHash: '', decisions: [], updatedAt: new Date().toISOString() }, qa);
+  const skeleton = workspaceData(analysis, plan, index, decisions, placements, { schemaVersion: '1.0', projectId: transcript.projectId, sourceEditPlanHash: '', decisions: [], updatedAt: new Date().toISOString() }, qa, liveResult.provenance, liveResult.sectionProvenance);
   const initial = createInitialReviewState(skeleton, sha256(JSON.stringify(plan)));
   let reviewed = initial;
   const operationSections = analysis.sections.filter((section) => plan.operations.some((operation) => operation.id === `visual-${section.id}` || operation.id === `broll-${section.id}`));
@@ -167,7 +176,7 @@ async function main() {
   for (const section of unverifiedScriptureSections) reviewed = applyReviewAction(reviewed, section.id, 'keep-pastor', { reason: 'Scripture reference remains unverified; Keep Pastor preserves the speaker and prevents a final Scripture card.' });
   const revertBase = applyReviewAction(initial, operationSections[2].id, 'accept', { reason: 'Revert proof setup.' });
   const revertResult = applyReviewAction(revertBase, operationSections[2].id, 'revert', { reason: 'Returned to original live-AI pending state.' });
-  const workspace = workspaceData(analysis, plan, index, decisions, placements, initial, qa);
+  const workspace = workspaceData(analysis, plan, index, decisions, placements, initial, qa, liveResult.provenance, liveResult.sectionProvenance);
   const finalData = updateReview(workspace, reviewed);
   const approvedPlan = deriveApprovedEditPlan(plan, reviewed, finalData.readiness.ready ? 'approved' : 'draft');
   const approvedFailures = validatePlan(approvedPlan, duration);
@@ -224,10 +233,48 @@ async function main() {
   if (boundedQa.status !== 'PASS') throw new Error('Bounded preview QA failed; full render blocked.');
 
   const fullOutput = resolve(artifacts, 'full-sermon-live-ai-reviewed.mp4');
-  let fullTiming = await readJson<{ wallMs: number; renderedDoneInMs: number | null; encodedDoneInMs: number | null }>(resolve(artifacts, 'full-render-timing.json')).catch(() => undefined);
-  if (!cacheOnly || !(await stat(fullOutput).catch(() => undefined))) {
+  const renderSettings = { composition: 'BanglaFoundation', codec: 'h264', audioCodec: 'aac', concurrency: 12, x264Preset: 'veryfast', duration };
+  const rendererFingerprint = sha256(JSON.stringify({
+    source: await directoryContentFingerprint(resolve(root, 'src'), ['.ts', '.tsx', '.css']),
+    dependencies: await fileVersionFingerprint(resolve(root, 'package-lock.json')),
+  }));
+  const mediaFingerprints = await Promise.all(mediaAssets.map(async (asset) => ({
+    assetId: asset.id,
+    fingerprint: await fileVersionFingerprint(asset.path.startsWith('/') ? asset.path : resolve(root, asset.path)),
+  })));
+  const fullRenderKey = sha256(JSON.stringify({
+    sourceFingerprint,
+    approvedPlanHash: sha256(JSON.stringify(approvedPlan)),
+    mediaFingerprints,
+    renderSettings,
+    rendererFingerprint,
+  }));
+  const fullRenderManifestPath = resolve(artifacts, 'full-render-cache.json');
+  const fullOutputExists = await stat(fullOutput).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  });
+  const fullRenderManifest = await stat(fullRenderManifestPath).then(
+    () => readJson<{ key: string }>(fullRenderManifestPath),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    },
+  );
+  const fullTimingPath = resolve(artifacts, 'full-render-timing.json');
+  let fullTiming = await stat(fullTimingPath).then(
+    () => readJson<{ wallMs: number; renderedDoneInMs: number | null; encodedDoneInMs: number | null }>(fullTimingPath),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    },
+  );
+  if (cacheOnly && (!fullOutputExists || fullRenderManifest?.key !== fullRenderKey)) throw new Error('Cache-only full render is missing or stale for the current source, approved plan, media, or render settings.');
+  if (cacheOnly && !fullTiming) throw new Error('Cache-only full render is missing its timing record.');
+  if (!cacheOnly) {
     fullTiming = await renderComposition(serveUrl, source, approvedPlan, fullOutput, mediaAssets, duration);
-    await writeJson(resolve(artifacts, 'full-render-timing.json'), fullTiming);
+    await writeJson(fullTimingPath, fullTiming);
+    await writeJson(fullRenderManifestPath, { key: fullRenderKey, sourceFingerprint, approvedPlanHash: sha256(JSON.stringify(approvedPlan)), mediaFingerprints, renderSettings, rendererFingerprint });
   }
   const fullProbe = await probe(fullOutput);
   const frameSpecs = [{ name: 'opening', time: 20 }, { name: 'main-point', time: 240 }, { name: 'illustration', time: 600 }, { name: 'reverent', time: 1800 }, { name: 'conclusion', time: 2500 }];
