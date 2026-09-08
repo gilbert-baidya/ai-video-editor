@@ -1,0 +1,37 @@
+{
+  "name": "ai-video-editor-foundation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "proof": "tsx scripts/run-foundation-proof.ts",
+    "audit-alignment": "tsx scripts/audit-alignment.ts",
+    "prove-segment-safe-edit": "tsx scripts/prove-segment-safe-edit.ts",
+    "prove-caption-timing": "tsx scripts/prove-caption-timing.ts",
+    "prove-authoritative-mapping": "tsx scripts/prove-authoritative-mapping.ts",
+    "prove-transcript-integrity": "tsx scripts/prove-transcript-integrity.ts",
+    "prove-director": "tsx scripts/prove-director.ts",
+    "prove-director-hardening": "tsx scripts/prove-director-hardening.ts",
+    "prove-director-v2-preview": "tsx scripts/prove-director-v2-preview.ts",
+    "prove-director-v3-visual-intelligence": "tsx scripts/prove-director-v3-visual-intelligence.ts",
+    "prove-director-v4-local-broll": "tsx scripts/prove-director-v4-local-broll.ts",
+    "prove-director-v4-approved-broll": "tsx scripts/prove-director-v4-local-broll.ts",
+    "prove-director-review-workspace": "tsx scripts/prove-director-review-workspace.ts",
+    "test-director-review-workspace": "tsx scripts/test-director-review-workspace.ts",
+    "prove-sol-foundation-fixes": "tsx scripts/prove-sol-foundation-fixes.ts",
+    "test-tokenization": "tsx scripts/test-tokenization.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/player": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

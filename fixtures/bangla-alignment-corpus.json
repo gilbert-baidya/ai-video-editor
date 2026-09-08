@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "purpose": "Unicode and tokenization regression corpus; not an audio ground truth set.",
+  "phrases": [
+    { "text": "অনুগ্রহ এখনো চলছে", "category": "normal" },
+    { "text": "পবিত্র আত্মা", "category": "conjunct-and-vowel-sign" },
+    { "text": "ঈশ্বর এখনো কাজ করছেন", "category": "normal" },
+    { "text": "যোহন ১৫:৫", "category": "script-and-numeral" },
+    { "text": "প্রার্থনা", "category": "conjunct" },
+    { "text": "বিশ্বাস", "category": "conjunct" },
+    { "text": "মানুষ যেখানে আর কিছু করতে পারে না, ঈশ্বর সেখানে হস্তক্ষেপ করতে পারেন।", "category": "sentence" },
+    { "text": "প্রভু আমাকে উদ্ধার করেছেন", "category": "foundation-proof" },
+    { "text": "প্রিয় মণ্ডলী, আপনার জীবনে কোন চ্যালেঞ্জ চলছে?", "category": "foundation-proof" }
+  ]
+}

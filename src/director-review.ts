@@ -1,0 +1,188 @@
+import type {
+  BrollDecision,
+  EditOperation,
+  EditPlan,
+  MediaAsset,
+  MediaCandidate,
+  MediaIndex,
+  PlacementDecision,
+  SermonAnalysis,
+  SermonSection,
+} from './contracts.ts';
+
+function validateReviewPlan(plan: EditPlan, duration: number): string[] {
+  const failures: string[] = [];
+  for (const operation of plan.operations) {
+    if (operation.start < 0 || operation.end <= operation.start) failures.push(`${operation.id}: invalid time range`);
+    if (operation.end > duration) failures.push(`${operation.id}: exceeds media duration`);
+  }
+  for (let index = 0; index < plan.operations.length; index += 1) {
+    for (let next = index + 1; next < plan.operations.length; next += 1) {
+      const left = plan.operations[index];
+      const right = plan.operations[next];
+      if (left.type !== 'caption' && right.type !== 'caption' && left.start < right.end && right.start < left.end) failures.push(`${left.id}/${right.id}: illegal overlap`);
+    }
+  }
+  return failures;
+}
+
+export type ReviewStatus = 'pending' | 'accepted' | 'modified' | 'rejected';
+export type ReviewAction = 'accept' | 'reject' | 'keep-pastor' | 'modify' | 'replace-broll' | 'approve-text' | 'revert';
+
+export interface ReviewDecision {
+  beatId: string;
+  status: ReviewStatus;
+  originalOperation?: EditOperation;
+  reviewedOperation?: EditOperation;
+  reviewerReason?: string;
+  approvedDisplayText?: string;
+  reviewedAt?: string;
+  safeNoChange?: boolean;
+}
+
+export interface ReviewState {
+  schemaVersion: '1.0';
+  projectId: string;
+  sourceEditPlanHash: string;
+  decisions: ReviewDecision[];
+  updatedAt: string;
+}
+
+export interface ReviewBeat {
+  section: SermonSection;
+  originalOperation?: EditOperation;
+  brollDecision?: BrollDecision;
+  selectedAsset?: MediaAsset;
+  placement?: PlacementDecision;
+  candidates: Array<MediaCandidate & { asset?: MediaAsset }>;
+  requiredReview: boolean;
+  noBroll: boolean;
+}
+
+export interface ReviewReadiness {
+  ready: boolean;
+  label: 'READY FOR FINAL RENDER' | 'REVIEW BLOCKED';
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface ReviewWorkspaceData {
+  projectId: string;
+  title: string;
+  languageProfile: 'bn' | 'en' | 'mixed';
+  preview: {
+    controlUrl: string;
+    directorUrl: string;
+    durationSeconds: number;
+    sourceStart: number;
+    sourceEnd: number;
+  };
+  analysis: SermonAnalysis;
+  aiPlan: EditPlan;
+  mediaIndex: MediaIndex;
+  beats: ReviewBeat[];
+  qa: { status: string; failures: string[]; [key: string]: unknown };
+  evidence: {
+    explanationChain: string;
+    placementEvidence: string;
+    beforeFrame: string;
+    duringFrame: string;
+    afterFrame: string;
+  };
+  initialReview: ReviewState;
+}
+
+export interface ReviewedWorkspaceData extends ReviewWorkspaceData {
+  review: ReviewState;
+  approvedPlan: EditPlan;
+  readiness: ReviewReadiness;
+}
+
+function operationBeatId(operation: EditOperation): string | undefined {
+  if (operation.type === 'broll') return operation.id.replace(/^broll-/, '');
+  if (operation.id.startsWith('policy-')) return operation.id.replace(/^policy-/, '');
+  if (operation.id.startsWith('visual-')) return operation.id.replace(/^visual-/, '');
+  return undefined;
+}
+
+export function operationForBeat(plan: EditPlan, beatId: string): EditOperation | undefined {
+  return plan.operations.find((operation) => operationBeatId(operation) === beatId);
+}
+
+export function createInitialReviewState(data: Pick<ReviewWorkspaceData, 'projectId' | 'aiPlan' | 'beats'>, sourceEditPlanHash: string): ReviewState {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: '1.0',
+    projectId: data.projectId,
+    sourceEditPlanHash,
+    decisions: data.beats.map((beat) => ({
+      beatId: beat.section.id,
+      status: beat.requiredReview ? 'pending' : 'accepted',
+      originalOperation: beat.originalOperation,
+      reviewedOperation: beat.requiredReview ? undefined : beat.originalOperation,
+      reviewerReason: beat.requiredReview ? undefined : 'No visual operation: speaker-led state is preserved by policy.',
+      safeNoChange: !beat.requiredReview,
+      reviewedAt: beat.requiredReview ? undefined : now,
+    })),
+    updatedAt: now,
+  };
+}
+
+function reviewedOperationFor(decision: ReviewDecision): EditOperation | undefined {
+  if (decision.status === 'rejected') return undefined;
+  if (decision.status === 'modified') return decision.reviewedOperation;
+  return decision.originalOperation;
+}
+
+export function deriveApprovedEditPlan(aiPlan: EditPlan, review: ReviewState, status: EditPlan['status'] = 'approved'): EditPlan {
+  const decisions = new Map(review.decisions.map((decision) => [decision.beatId, decision]));
+  const operations = aiPlan.operations.flatMap((operation) => {
+    const beatId = operationBeatId(operation);
+    if (!beatId) return [operation];
+    const decision = decisions.get(beatId);
+    return decision ? (reviewedOperationFor(decision) ? [reviewedOperationFor(decision)!] : []) : [operation];
+  });
+  return { ...aiPlan, operations, status };
+}
+
+export function applyReviewAction(state: ReviewState, beatId: string, action: ReviewAction, options: { operation?: EditOperation; displayText?: string; reason?: string } = {}): ReviewState {
+  const decisions: ReviewDecision[] = state.decisions.map((decision): ReviewDecision => {
+    if (decision.beatId !== beatId) return decision;
+    const now = new Date().toISOString();
+    if (action === 'revert') return { ...decision, status: (decision.safeNoChange ? 'accepted' : 'pending') as ReviewStatus, reviewedOperation: decision.safeNoChange ? decision.originalOperation : undefined, approvedDisplayText: undefined, reviewerReason: decision.safeNoChange ? 'No visual operation: speaker-led state is preserved by policy.' : undefined, reviewedAt: decision.safeNoChange ? now : undefined };
+    if (action === 'accept') return { ...decision, status: 'accepted', reviewedOperation: decision.originalOperation, reviewerReason: options.reason ?? 'Accepted the resolved AI operation.', reviewedAt: now };
+    if (action === 'reject' || action === 'keep-pastor') return { ...decision, status: 'rejected', reviewedOperation: undefined, reviewerReason: options.reason ?? 'Keep Pastor: remove the proposed visual takeover and preserve the speaker-led state.', reviewedAt: now };
+    if (action === 'modify' || action === 'replace-broll') return { ...decision, status: 'modified', reviewedOperation: options.operation ?? decision.originalOperation, reviewerReason: options.reason ?? 'Modified during human review.', reviewedAt: now };
+    if (action === 'approve-text') return { ...decision, status: decision.status === 'pending' ? 'modified' : decision.status, reviewedOperation: decision.reviewedOperation ?? decision.originalOperation, approvedDisplayText: options.displayText?.trim(), reviewerReason: options.reason ?? 'Display text explicitly approved by the reviewer.', reviewedAt: now };
+    return decision;
+  });
+  return { ...state, decisions, updatedAt: new Date().toISOString() };
+}
+
+export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' | 'qa' | 'aiPlan'>, review: ReviewState, durationSeconds: number): ReviewReadiness {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  const decisions = new Map(review.decisions.map((decision) => [decision.beatId, decision]));
+  for (const beat of data.beats) {
+    const decision = decisions.get(beat.section.id);
+    if (beat.requiredReview && (!decision || decision.status === 'pending')) blockers.push(`${beat.section.id}: human review is still pending.`);
+    if (beat.brollDecision?.decision === 'selected') {
+      const asset = beat.selectedAsset;
+      const resolved = decision ? reviewedOperationFor(decision) : undefined;
+      if (resolved?.type === 'broll' && (!asset || asset.rightsStatus === 'unknown')) blockers.push(`${beat.section.id}: selected media rights require review.`);
+      if (resolved?.type === 'broll' && asset && !asset.usable) blockers.push(`${beat.section.id}: selected media is technically unusable.`);
+    }
+    if (beat.section.visualRecommendation === 'scripture-card' && decision?.status !== 'rejected' && beat.section.scriptureReference) blockers.push(`${beat.section.id}: Scripture reference is unverified; no final Scripture card may be approved.`);
+    if (beat.section.suggestedDisplayText && decision?.approvedDisplayText === undefined && decision?.status !== 'rejected' && beat.originalOperation?.type === 'sermon-point') blockers.push(`${beat.section.id}: AI display text is not approved.`);
+  }
+  const plan = deriveApprovedEditPlan(data.aiPlan, review, 'approved');
+  blockers.push(...validateReviewPlan(plan, durationSeconds));
+  if (data.qa.status !== 'PASS') blockers.push(...data.qa.failures.map((failure) => `QA: ${failure}`));
+  if (data.beats.some((beat) => beat.noBroll)) warnings.push('No-B-roll decisions remain active for speaker-led and application moments.');
+  return { ready: blockers.length === 0, label: blockers.length === 0 ? 'READY FOR FINAL RENDER' : 'REVIEW BLOCKED', blockers, warnings };
+}
+
+export function updateReview(data: ReviewWorkspaceData, review: ReviewState): ReviewedWorkspaceData {
+  const readiness = evaluateReviewReadiness(data, review, data.preview.durationSeconds);
+  return { ...data, review, approvedPlan: deriveApprovedEditPlan(data.aiPlan, review, readiness.ready ? 'approved' : 'draft'), readiness };
+}

@@ -1,0 +1,2 @@
+/* The selected inspector must expose the same review actions as the timeline cards. */
+.inspector > .decision-card .actions { display: flex; }
