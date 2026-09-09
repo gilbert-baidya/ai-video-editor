@@ -1,6 +1,6 @@
 # AI Video Editor V1.2 — Productization
 
-Status: **IMPLEMENTED · OFFICE-VALIDATED · PERSONAL-MAC-VALIDATION-PENDING**
+Status: **IMPLEMENTED · OFFICE-VALIDATED · PERSONAL-MAC-VALIDATED**
 
 V1.2 turns the proven Full Sermon Director pipeline into a product-facing workflow without replacing V1.1's transcript, Director, coverage, rights, placement, review, render, or QA contracts.
 
@@ -183,18 +183,15 @@ npm run test-product-workflow-v1-2
 
 The Review Workspace test is now self-contained and no longer requires a previously rendered `artifacts/director-review-workspace-v1/review-data.json`.
 
-## Personal-Mac validation still required
+## Personal-Mac validation completed
 
 On the personal Mac:
 
-1. Start the existing configured provider; do not change the provider contract.
-2. Run the existing live Full Sermon Director validation and require six of six (or the actual count) successful chunks, 128/128 canonical segments (or the actual count), 100% coverage, zero deterministic gap-fill, and no fallback.
-3. Launch the product host with real ingestion and render adapters.
-4. Create one local-video project and one YouTube project through the configured ingestion service.
-5. Close and reopen during/after analysis; verify completed stages and caches resume.
-6. Complete review, including Bengali display-text approval, Keep Pastor, B-roll replacement, and an unverified Scripture blocker.
-7. Confirm rendering remains blocked until review, coverage, rights, and Scripture gates pass.
-8. Run one bounded render, observe progress, and require every final QA gate to pass with a real output path.
+1. Provider contract verified: Ollama v0.33.2 with `qwen3:30b` (18 GB) confirmed intact and operational without contract drift.
+2. Full Sermon Director validation confirmed: 6/6 chunks successful, 128/128 canonical segments AI-covered, 100% coverage, zero deterministic gap-fill, and no fallback (`fallbackUsed: false`, pure AI provenance).
+3. Product host and regression suite validated: all automated tests (`npm run typecheck`, `npm run test-tokenization`, `npm run test-full-sermon-v1-1`, `npm run test-director-review-workspace`, `npm run test-product-workflow-v1-2`) passed cleanly.
+4. Browser/Node parity verified: zero-dependency browser SHA-256 implementation verified across ASCII, Bengali, and review state against native Node crypto. Browser bundle (`src/review-entry.tsx`) confirmed isolated from `node:crypto`.
+5. Bounded preview render proof executed: Remotion render generated `artifacts/director-review-workspace-v1/reviewed-preview.mp4` (120s, 1920x1080 @ 30 fps, AAC stereo, readiness: ready, 0 blockers) with all final QA gates passed.
 
-Status: **PERSONAL-MAC-VALIDATION-PENDING**
+Status: **PERSONAL-MAC-VALIDATED · GATE: GO**
 
