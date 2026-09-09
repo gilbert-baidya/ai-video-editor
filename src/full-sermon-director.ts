@@ -18,6 +18,7 @@ import {
   type SermonChunkConfig,
 } from './sermon-chunking.ts';
 import { runCachedStage, type StageRunResult } from './stage-cache.ts';
+import { DIRECTOR_COVERAGE_CONTRACT_VERSION } from './canonical-coverage.ts';
 import { sha256 } from './foundation.ts';
 
 export interface FullSermonDirectorOptions {
@@ -25,6 +26,8 @@ export interface FullSermonDirectorOptions {
   fallback?: DeterministicDirectorFallback;
   chunkConfig?: SermonChunkConfig;
   cacheRoot?: string;
+  /** Bounded AI coverage-repair attempts per chunk. Defaults to 1. */
+  maxCoverageRepairAttempts?: number;
 }
 
 export interface FullSermonChunkExecution {
@@ -39,6 +42,21 @@ export interface FullSermonDirectorResult {
   chunkExecutions: FullSermonChunkExecution[];
   reconciliation: ChunkReconciliationResult;
   provenance: DirectorExecutionProvenance;
+  coverage: FullSermonCoverageSummary;
+}
+
+export interface FullSermonCoverageSummary {
+  contractVersion: string;
+  primaryCanonicalSegmentCount: number;
+  aiCoveredPrimarySegmentCount: number;
+  deterministicGapFilledSegmentCount: number;
+  deterministicGapFilledSegmentIds: string[];
+  coveragePercent: number;
+  canonicalCoverageComplete: boolean;
+  coverageRepairAttempts: number;
+  coverageRepairSuccesses: number;
+  providerChunkCount: number;
+  providerSuccessCount: number;
 }
 
 async function uncached<T>(execute: () => Promise<T>): Promise<StageRunResult<T>> {
@@ -75,7 +93,7 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
     const providerIdentity = provider?.cacheIdentity ?? 'not-configured';
     const execute = async () => {
       if (unavailableResult) return fallback.execute(input, unavailableResult.error ?? 'Configured Director AI provider is unavailable.', 0, unavailableResult);
-      const result = await executeDirector(input, { provider, fallback });
+      const result = await executeDirector(input, { provider, fallback, maxCoverageRepairAttempts: options.maxCoverageRepairAttempts });
       if (result.provenance.providerStatus === 'UNAVAILABLE' && provider) {
         unavailableResult = {
           providerResult: 'provider-unavailable',
@@ -93,8 +111,8 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
       ? await runCachedStage(
         options.cacheRoot,
         'director-analysis',
-        { inputHash, providerIdentity, fallbackIdentity: fallback.cacheIdentity },
-        'v1.1',
+        { inputHash, providerIdentity, fallbackIdentity: fallback.cacheIdentity, coverageContract: DIRECTOR_COVERAGE_CONTRACT_VERSION, maxCoverageRepairAttempts: String(options.maxCoverageRepairAttempts ?? 1) },
+        'v1.2',
         execute,
         (value) => value.provenance.providerStatus !== 'UNAVAILABLE' && value.provenance.providerStatus !== 'FAILED',
       )
@@ -109,16 +127,46 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
   }))));
   const reconcile = async () => reconcileChunkAnalyses(transcript, chunkExecutions);
   const reconciliationStage = options.cacheRoot
-    ? await runCachedStage(options.cacheRoot, 'director-normalization', { transcriptHash, reconciliationInputHash }, 'v1.1', reconcile)
+    ? await runCachedStage(options.cacheRoot, 'director-normalization', { transcriptHash, reconciliationInputHash, coverageContract: DIRECTOR_COVERAGE_CONTRACT_VERSION }, 'v1.2', reconcile)
     : await uncached(reconcile);
   const chunkProvenance = chunkExecutions.map(({ execution }) => execution.provenance);
-  const gapProvenance = reconciliationStage.value.records.some((record) => record.type === 'gap-fill')
-    ? Object.values(reconciliationStage.value.sectionProvenance).find((item) => item.provider === 'deterministic-fallback')
+  const reconciliation = reconciliationStage.value;
+  const gapProvenance = reconciliation.records.some((record) => record.type === 'gap-fill')
+    ? Object.values(reconciliation.sectionProvenance).find((item) => item.provider === 'deterministic-fallback')
     : undefined;
+  const provenance = combineDirectorProvenance(gapProvenance ? [...chunkProvenance, gapProvenance] : chunkProvenance);
+  const deterministicGapFilledSegmentIds = [...new Set([
+    ...reconciliation.deterministicGapFilledSegmentIds,
+    ...chunkProvenance.flatMap((item) => item.coverage?.deterministicGapFilledSegmentIds ?? []),
+  ])].filter((id) => transcript.segments.some((segment) => segment.id === id));
+  const coverage: FullSermonCoverageSummary = {
+    contractVersion: DIRECTOR_COVERAGE_CONTRACT_VERSION,
+    primaryCanonicalSegmentCount: reconciliation.coverage.primarySegmentCount,
+    aiCoveredPrimarySegmentCount: reconciliation.coverage.coveredPrimarySegmentCount,
+    deterministicGapFilledSegmentCount: deterministicGapFilledSegmentIds.length,
+    deterministicGapFilledSegmentIds,
+    coveragePercent: reconciliation.coverage.coveragePercent,
+    canonicalCoverageComplete: reconciliation.coverage.complete && !deterministicGapFilledSegmentIds.length,
+    coverageRepairAttempts: chunkProvenance.reduce((total, item) => total + (item.coverage?.repairAttempts ?? 0), 0),
+    coverageRepairSuccesses: chunkProvenance.reduce((total, item) => total + (item.coverage?.repairSuccesses ?? 0), 0),
+    providerChunkCount: chunkExecutions.length,
+    providerSuccessCount: chunkExecutions.filter(({ execution }) => execution.provenance.source === 'ai').length,
+  };
   return {
     chunks,
     chunkExecutions,
-    reconciliation: reconciliationStage.value,
-    provenance: combineDirectorProvenance(gapProvenance ? [...chunkProvenance, gapProvenance] : chunkProvenance),
+    reconciliation,
+    coverage,
+    provenance: {
+      ...provenance,
+      canonicalCoverageValidation: coverage.canonicalCoverageComplete ? provenance.canonicalCoverageValidation : 'FAIL',
+      canonicalCoverageComplete: coverage.canonicalCoverageComplete,
+      coverage: {
+        report: reconciliation.coverage,
+        repairAttempts: coverage.coverageRepairAttempts,
+        repairSuccesses: coverage.coverageRepairSuccesses,
+        deterministicGapFilledSegmentIds,
+      },
+    },
   };
 }

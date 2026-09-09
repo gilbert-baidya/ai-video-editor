@@ -7,10 +7,36 @@ import {
   type DirectorProviderResult,
   type ProviderAttempt,
 } from './director.ts';
+import {
+  mergeCoverageRepair,
+  resolvePrimarySegmentIds,
+  validateCanonicalCoverage,
+  type CanonicalCoverageReport,
+} from './canonical-coverage.ts';
 import type { SermonAnalysis } from './contracts.ts';
 
 export type DirectorExecutionSource = 'ai' | 'deterministic-fallback' | 'mixed';
-export type DirectorProviderStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'FAILED' | 'NOT_CONFIGURED';
+/**
+ * NOT_CONFIGURED: no provider/model configuration exists.
+ * UNAVAILABLE: a configured provider could not be reached.
+ * FAILED: the provider executed but produced no usable result.
+ * PARTIAL: the provider succeeded but deterministic fallback was still required somewhere.
+ * MIXED: an aggregate of several units with differing outcomes.
+ * SUCCESS: valid, complete provider result with no fallback.
+ * AVAILABLE: retained alias of SUCCESS for existing consumers.
+ */
+export type DirectorProviderStatus = 'SUCCESS' | 'AVAILABLE' | 'PARTIAL' | 'MIXED' | 'UNAVAILABLE' | 'FAILED' | 'NOT_CONFIGURED';
+
+export function isDirectorSuccessStatus(status: DirectorProviderStatus): boolean {
+  return status === 'SUCCESS' || status === 'AVAILABLE';
+}
+
+export interface DirectorCoverageProvenance {
+  report: CanonicalCoverageReport;
+  repairAttempts: number;
+  repairSuccesses: number;
+  deterministicGapFilledSegmentIds: string[];
+}
 
 export interface DirectorExecutionProvenance {
   source: DirectorExecutionSource;
@@ -22,6 +48,9 @@ export interface DirectorExecutionProvenance {
   durationMs: number;
   schemaValidation: 'PASS' | 'FAIL' | 'NOT_RUN';
   canonicalRangeValidation: 'PASS' | 'FAIL' | 'NOT_RUN';
+  canonicalCoverageValidation: 'PASS' | 'FAIL' | 'NOT_RUN';
+  canonicalCoverageComplete: boolean;
+  coverage?: DirectorCoverageProvenance;
   attempts: ProviderAttempt[];
 }
 
@@ -34,6 +63,16 @@ export interface DirectorExecutionResult {
 export interface DirectorExecutionOptions {
   provider?: DirectorProvider;
   fallback?: DeterministicDirectorFallback;
+  /** Bounded number of AI coverage-repair requests. Defaults to 1. Never loops indefinitely. */
+  maxCoverageRepairAttempts?: number;
+}
+
+function aggregateStatus(items: DirectorExecutionProvenance[]): DirectorProviderStatus {
+  if (items.every((item) => isDirectorSuccessStatus(item.providerStatus))) return 'SUCCESS';
+  if (items.some((item) => isDirectorSuccessStatus(item.providerStatus) || item.providerStatus === 'PARTIAL' || item.providerStatus === 'MIXED')) return 'MIXED';
+  if (items.some((item) => item.providerStatus === 'FAILED')) return 'FAILED';
+  if (items.some((item) => item.providerStatus === 'UNAVAILABLE')) return 'UNAVAILABLE';
+  return 'NOT_CONFIGURED';
 }
 
 export function combineDirectorProvenance(items: DirectorExecutionProvenance[]): DirectorExecutionProvenance {
@@ -43,34 +82,39 @@ export function combineDirectorProvenance(items: DirectorExecutionProvenance[]):
   const models = [...new Set(items.map((item) => item.model).filter((item): item is string => Boolean(item)))];
   const schemaStates = new Set(items.map((item) => item.schemaValidation));
   const rangeStates = new Set(items.map((item) => item.canonicalRangeValidation));
+  const coverageStates = new Set(items.map((item) => item.canonicalCoverageValidation));
+  const coverageItems = items.map((item) => item.coverage).filter((item): item is DirectorCoverageProvenance => Boolean(item));
   return {
     source: sources.size === 1 ? items[0].source : 'mixed',
     provider: providers.join(', '),
     model: models.join(', ') || undefined,
-    providerStatus: items.every((item) => item.providerStatus === 'AVAILABLE')
-      ? 'AVAILABLE'
-      : items.some((item) => item.providerStatus === 'FAILED')
-        ? 'FAILED'
-        : items.some((item) => item.providerStatus === 'UNAVAILABLE')
-          ? 'UNAVAILABLE'
-          : 'NOT_CONFIGURED',
+    providerStatus: aggregateStatus(items),
     fallbackUsed: items.some((item) => item.fallbackUsed),
     fallbackReason: [...new Set(items.map((item) => item.fallbackReason).filter((item): item is string => Boolean(item)))].join(' ') || undefined,
     durationMs: items.reduce((total, item) => total + item.durationMs, 0),
     schemaValidation: schemaStates.size === 1 ? items[0].schemaValidation : schemaStates.has('FAIL') ? 'FAIL' : 'NOT_RUN',
     canonicalRangeValidation: rangeStates.size === 1 ? items[0].canonicalRangeValidation : rangeStates.has('FAIL') ? 'FAIL' : 'NOT_RUN',
+    canonicalCoverageValidation: coverageStates.size === 1 ? items[0].canonicalCoverageValidation : coverageStates.has('FAIL') ? 'FAIL' : 'NOT_RUN',
+    canonicalCoverageComplete: items.every((item) => item.canonicalCoverageComplete),
+    coverage: coverageItems.length ? {
+      report: coverageItems[0].report,
+      repairAttempts: coverageItems.reduce((total, item) => total + item.repairAttempts, 0),
+      repairSuccesses: coverageItems.reduce((total, item) => total + item.repairSuccesses, 0),
+      deterministicGapFilledSegmentIds: [...new Set(coverageItems.flatMap((item) => item.deterministicGapFilledSegmentIds))],
+    } : undefined,
     attempts: items.flatMap((item) => item.attempts),
   };
 }
 
 export class DeterministicDirectorFallback {
   readonly name = 'deterministic-fallback';
-  readonly model = 'canonical-segment-safe-v1.1';
-  readonly cacheIdentity = 'deterministic-fallback-canonical-segment-safe-v1.1';
+  readonly model = 'canonical-segment-safe-v1.2';
+  readonly cacheIdentity = 'deterministic-fallback-canonical-segment-safe-v1.2';
 
   execute(input: DirectorInput, reason: string, durationMs = 0, providerResult?: DirectorProviderResult): DirectorExecutionResult {
     const started = Date.now();
     const analysis = deterministicFallbackAnalysis(input);
+    const primarySegmentIds = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
     return {
       analysis,
       providerResult,
@@ -84,6 +128,14 @@ export class DeterministicDirectorFallback {
         durationMs: durationMs + Date.now() - started,
         schemaValidation: providerResult?.attempts.some((attempt) => attempt.schema === 'pass') ? 'PASS' : providerResult?.attempts.length ? 'FAIL' : 'NOT_RUN',
         canonicalRangeValidation: providerResult?.attempts.some((attempt) => attempt.segmentReferences === 'pass') ? 'PASS' : providerResult?.attempts.length ? 'FAIL' : 'NOT_RUN',
+        canonicalCoverageValidation: 'NOT_RUN',
+        canonicalCoverageComplete: false,
+        coverage: {
+          report: validateCanonicalCoverage([], { segments: input.segments, primarySegmentIds }),
+          repairAttempts: 0,
+          repairSuccesses: 0,
+          deterministicGapFilledSegmentIds: primarySegmentIds,
+        },
         attempts: providerResult?.attempts ?? [],
       },
     };
@@ -196,19 +248,96 @@ export async function executeDirector(input: DirectorInput, options: DirectorExe
     return fallback.execute(input, failedResult.error ?? 'Director output validation failed.', failedResult.runtimeMs, failedResult);
   }
 
+  const primarySegmentIds = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
+  const target = { segments: input.segments, primarySegmentIds };
+  let analysis = providerResult.analysis;
+  let coverage = validateCanonicalCoverage(analysis.sections, target);
+  const maxRepairAttempts = Math.max(0, options.maxCoverageRepairAttempts ?? 1);
+  const repairAttempts: ProviderAttempt[] = [];
+  let repairAttemptCount = 0;
+  let repairSuccessCount = 0;
+  let repairRuntimeMs = 0;
+
+  // Bounded, explicit coverage repair. Never loops beyond maxRepairAttempts.
+  while (!coverage.complete && coverage.status === 'INCOMPLETE' && repairAttemptCount < maxRepairAttempts && options.provider.repairCoverage) {
+    repairAttemptCount += 1;
+    const missingSegmentIds = coverage.missingPrimaryIds;
+    const positions = new Map(input.segments.map((segment, index) => [segment.id, index]));
+    let repair: DirectorProviderResult;
+    try {
+      repair = await options.provider.repairCoverage({
+        input,
+        missingSegmentIds,
+        missingSegmentIndices: missingSegmentIds.map((id) => positions.get(id)!).sort((left, right) => left - right),
+        attempt: repairAttemptCount,
+      });
+    } catch (error) {
+      repairAttempts.push({ attempt: repairAttemptCount, parse: 'fail', schema: 'fail', segmentReferences: 'fail', semanticOutput: 'fail', canonicalCoverage: 'fail', runtimeMs: 0, phase: 'coverage-repair', error: error instanceof Error ? error.message : String(error) });
+      break;
+    }
+    repairAttempts.push(...repair.attempts.map((attempt) => ({ ...attempt, phase: 'coverage-repair' as const })));
+    repairRuntimeMs += repair.runtimeMs;
+    if (!repair.analysis || !['ai-success', 'ai-retry-success'].includes(repair.providerResult)) break;
+    const repairFailures = validateResolvedDirectorAnalysis(repair.analysis, input);
+    if (repairFailures.length) break;
+    const merged = mergeCoverageRepair(analysis, repair.analysis.sections, target);
+    const mergedCoverage = validateCanonicalCoverage(merged.analysis.sections, target);
+    if (!merged.acceptedSections.length || mergedCoverage.status === 'INVALID') break;
+    analysis = merged.analysis;
+    coverage = mergedCoverage;
+    if (coverage.complete) repairSuccessCount += 1;
+  }
+
+  const coverageProvenance: DirectorCoverageProvenance = {
+    report: coverage,
+    repairAttempts: repairAttemptCount,
+    repairSuccesses: repairSuccessCount,
+    deterministicGapFilledSegmentIds: coverage.complete ? [] : coverage.missingPrimaryIds,
+  };
+  const attempts = [...providerResult.attempts, ...repairAttempts];
+  const durationMs = providerResult.runtimeMs + repairRuntimeMs;
+  const resolvedProviderResult: DirectorProviderResult = { ...providerResult, analysis, attempts, runtimeMs: durationMs };
+
+  if (!coverage.complete) {
+    // Genuine AI decisions are retained, but incomplete canonical coverage can never be
+    // reported as pure AI. Reconciliation deterministically gap-fills the remainder.
+    return {
+      analysis,
+      providerResult: resolvedProviderResult,
+      provenance: {
+        source: 'mixed',
+        provider: providerResult.provider,
+        model: providerResult.model,
+        providerStatus: 'PARTIAL',
+        fallbackUsed: true,
+        fallbackReason: `Canonical coverage incomplete after ${repairAttemptCount} bounded AI repair attempt(s). ${coverage.failures.join(' ')}`.trim(),
+        durationMs,
+        schemaValidation: attempts.some((attempt) => attempt.schema === 'pass') ? 'PASS' : 'FAIL',
+        canonicalRangeValidation: attempts.some((attempt) => attempt.segmentReferences === 'pass') ? 'PASS' : 'FAIL',
+        canonicalCoverageValidation: 'FAIL',
+        canonicalCoverageComplete: false,
+        coverage: coverageProvenance,
+        attempts,
+      },
+    };
+  }
+
   return {
-    analysis: providerResult.analysis,
-    providerResult,
+    analysis,
+    providerResult: resolvedProviderResult,
     provenance: {
       source: 'ai',
       provider: providerResult.provider,
       model: providerResult.model,
-      providerStatus: 'AVAILABLE',
+      providerStatus: 'SUCCESS',
       fallbackUsed: false,
-      durationMs: providerResult.runtimeMs,
-      schemaValidation: providerResult.attempts.some((attempt) => attempt.schema === 'pass') ? 'PASS' : 'FAIL',
-      canonicalRangeValidation: providerResult.attempts.some((attempt) => attempt.segmentReferences === 'pass') ? 'PASS' : 'FAIL',
-      attempts: providerResult.attempts,
+      durationMs,
+      schemaValidation: attempts.some((attempt) => attempt.schema === 'pass') ? 'PASS' : 'FAIL',
+      canonicalRangeValidation: attempts.some((attempt) => attempt.segmentReferences === 'pass') ? 'PASS' : 'FAIL',
+      canonicalCoverageValidation: 'PASS',
+      canonicalCoverageComplete: true,
+      coverage: coverageProvenance,
+      attempts,
     },
   };
 }

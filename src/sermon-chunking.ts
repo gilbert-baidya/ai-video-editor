@@ -1,5 +1,6 @@
 import type { SermonAnalysis, SermonSection, SermonSectionType, TranscriptDocument, TranscriptSegment, VisualRecommendation } from './contracts.ts';
 import { combineDirectorProvenance, type DirectorExecutionProvenance, type DirectorExecutionResult } from './director-execution.ts';
+import { validateCanonicalCoverage, type CanonicalCoverageReport } from './canonical-coverage.ts';
 import type { DirectorInput } from './director.ts';
 import { sha256 } from './foundation.ts';
 
@@ -42,6 +43,8 @@ export interface ChunkReconciliationResult {
   analysis: SermonAnalysis;
   records: ReconciliationRecord[];
   sectionProvenance: Record<string, DirectorExecutionProvenance>;
+  coverage: CanonicalCoverageReport;
+  deterministicGapFilledSegmentIds: string[];
 }
 
 export function canonicalTranscriptHash(transcript: TranscriptDocument): string {
@@ -118,7 +121,13 @@ export function createChunkDirectorInput(transcript: TranscriptDocument, chunk: 
     approvedDisplayText: text,
     segments,
   };
-  return { transcript: boundedTranscript, segments, projectDuration: segments.at(-1)!.end, projectId: boundedTranscript.projectId };
+  return {
+    transcript: boundedTranscript,
+    segments,
+    projectDuration: segments.at(-1)!.end,
+    projectId: boundedTranscript.projectId,
+    primarySegmentIds: [...chunk.segmentIds],
+  };
 }
 
 function choiceForSegment(candidates: Array<{ chunk: SermonChunk; section: SermonSection; execution: DirectorExecutionResult }>): { chunk: SermonChunk; section: SermonSection; execution: DirectorExecutionResult } {
@@ -251,19 +260,33 @@ export function reconcileChunkAnalyses(
 
   const mainPoint = sections.find((section) => section.type === 'main-point');
   const passage = sections.find((section) => section.scriptureReference);
+  const gapFilledSegmentIds = records.filter((record) => record.type === 'gap-fill').map((record) => record.segmentId!).filter(Boolean);
+  const aiCoveredSections = sections.filter((section) => section.sourceSegmentIds.some((id) => provenanceBySegment.has(id)));
+  const coverage = validateCanonicalCoverage(
+    aiCoveredSections.map((section) => ({ ...section, sourceSegmentIds: section.sourceSegmentIds.filter((id) => provenanceBySegment.has(id)) })),
+    { segments: transcript.segments, primarySegmentIds: transcript.segments.map((segment) => segment.id) },
+  );
   const sectionProvenance: Record<string, DirectorExecutionProvenance> = Object.fromEntries(sections.map((section) => {
     const provenanceEntries = section.sourceSegmentIds.map((id) => provenanceBySegment.get(id)).filter((item): item is { key: string; provenance: DirectorExecutionProvenance } => Boolean(item));
     const provenance = [...new Map(provenanceEntries.map((item) => [item.key, item.provenance])).values()];
     const resolved: DirectorExecutionProvenance = provenance.length ? combineDirectorProvenance(provenance) : {
       source: 'deterministic-fallback',
       provider: 'deterministic-fallback',
-      model: 'canonical-gap-fill-v1.1',
-      providerStatus: 'NOT_CONFIGURED',
+      model: 'canonical-gap-fill-v1.2',
+      providerStatus: 'PARTIAL',
       fallbackUsed: true,
       fallbackReason: 'No provider recommendation covered this canonical segment.',
       durationMs: 0,
       schemaValidation: 'NOT_RUN',
       canonicalRangeValidation: 'NOT_RUN',
+      canonicalCoverageValidation: 'FAIL',
+      canonicalCoverageComplete: false,
+      coverage: {
+        report: coverage,
+        repairAttempts: 0,
+        repairSuccesses: 0,
+        deterministicGapFilledSegmentIds: section.sourceSegmentIds.filter((id) => !provenanceBySegment.has(id)),
+      },
       attempts: [],
     };
     return [section.id, resolved];
@@ -271,6 +294,8 @@ export function reconcileChunkAnalyses(
   return {
     records,
     sectionProvenance,
+    coverage,
+    deterministicGapFilledSegmentIds: gapFilledSegmentIds,
     analysis: {
       version: 'full-sermon-provider-neutral-v1.1',
       projectId: transcript.projectId,

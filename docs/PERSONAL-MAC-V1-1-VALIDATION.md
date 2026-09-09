@@ -79,13 +79,42 @@ npm run prove-full-sermon-live-ai
 Expected console state:
 
 ```text
-providerStatus: AVAILABLE
+providerStatus: SUCCESS
 fallbackUsed: false
 allChunksLive: true
 fallbackChunkCount: 0
+chunks: 6 (or the actual resulting count)
+primaryCanonicalSegmentCount: <all canonical segments>
+aiCoveredPrimarySegmentCount: <equal to primaryCanonicalSegmentCount>
+deterministicGapFilledSegmentCount: 0
+coveragePercent: 100
+canonicalCoverageComplete: true
 ```
 
+`coverageRepairAttempts` may be non-zero. A bounded repair is a legitimate path to complete coverage, but `coverageRepairSuccesses` must then be non-zero and coverage must still end at 100%.
+
 If fallback is reported, do not describe the result as live AI. Inspect `artifacts/full-sermon-pilot-v1-1/analysis/provider-probe.json` and resolve the provider/model issue before rendering.
+
+### 5a. Coverage validation gate
+
+```bash
+cat artifacts/full-sermon-pilot-v1-1/analysis/canonical-coverage.json
+cat artifacts/full-sermon-pilot-v1-1/analysis/provider-probe.json
+```
+
+Every condition below must hold before continuing:
+
+- the reported chunk count matches the run (six, or the actual resulting count)
+- provider success count equals provider chunk count
+- `schemaValidation: PASS`
+- `canonicalRangeValidation: PASS`
+- `canonicalCoverageValidation: PASS`
+- `canonicalCoverageComplete: true`
+- `coveragePercent: 100`
+- `deterministicGapFilledSegmentCount: 0`
+- `fallbackUsed: false`
+
+STOP before full rendering if any condition fails. `report.missingPrimaryIds` and `report.missingRanges` identify exactly which canonical segments the model left uncovered.
 
 ## 6. Compare AI with deterministic fallback
 
@@ -109,7 +138,9 @@ npm run compare-directors -- \
 
 Use provenance files that match `DirectorExecutionProvenance`. The automatic comparison from the live proof is authoritative when these standalone provenance files have not been exported.
 
-Review beat count, visual events, events/minute, Scripture and story activity, no-change decisions, B-roll/graphic/layout decisions, rejected unsafe decisions, schema validity, canonical range validity, runtime, and fallback status.
+Review beat count, visual events, events/minute, Scripture and story activity, no-change decisions, B-roll/graphic/layout decisions, rejected unsafe decisions, schema validity, canonical range validity, canonical coverage completeness, primary canonical segment count, AI-covered primary segment count, deterministic gap-filled segment count, coverage percent, coverage repair attempts and successes, provider chunk and success counts, provenance, runtime, and fallback status.
+
+For a successful pure-AI run the `ai` side must report `coveragePercent: 100`, `deterministicGapFilledSegmentCount: 0`, `canonicalCoverageComplete: true`, `provenance: ai`, and `fallbackUsed: false`.
 
 ## 7. Run the bounded and full-sermon proof
 

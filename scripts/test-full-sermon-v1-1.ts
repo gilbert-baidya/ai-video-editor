@@ -8,7 +8,8 @@ import { compareDirectorResults, measureDirectorResult } from '../src/director-c
 import { executeDirector } from '../src/director-execution.ts';
 import { runFullSermonDirector } from '../src/full-sermon-director.ts';
 import { createInitialReviewState, applyReviewAction, deriveApprovedEditPlan, isReviewStateCompatible, type ReviewWorkspaceData } from '../src/director-review.ts';
-import { resolveAIResponse, type DirectorInput, type DirectorProvider } from '../src/director.ts';
+import { resolveAIResponse, type DirectorCoverageRepairRequest, type DirectorInput, type DirectorProvider, type DirectorProviderResult } from '../src/director.ts';
+import { validateCanonicalCoverage } from '../src/canonical-coverage.ts';
 import { canonicalTranscriptHash, createSermonChunks, reconcileChunkAnalyses } from '../src/sermon-chunking.ts';
 import { runCachedStage } from '../src/stage-cache.ts';
 import { applyRetentionPolicy } from '../src/visual-policy.ts';
@@ -60,6 +61,13 @@ class UnavailableProvider implements DirectorProvider {
   }
 }
 
+function primaryRange(input: DirectorInput): { start: number; end: number } {
+  const ids = input.primarySegmentIds ?? input.segments.map((item) => item.id);
+  const start = input.segments.findIndex((item) => item.id === ids[0]);
+  const end = input.segments.findIndex((item) => item.id === ids[ids.length - 1]);
+  return { start, end };
+}
+
 class MockAiProvider implements DirectorProvider {
   readonly name: string = 'mock-ai';
   readonly model: string = 'fixture-v1';
@@ -68,14 +76,15 @@ class MockAiProvider implements DirectorProvider {
   async checkAvailability() {
     return { available: true, checkedAt: new Date().toISOString() };
   }
-  async analyze(input: DirectorInput) {
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     this.calls += 1;
     const started = Date.now();
+    const { start, end } = primaryRange(input);
     const analysis = resolveAIResponse({
       sections: [{
         sectionType: input.segments.some((item) => item.text.includes('প্রার্থনা')) ? 'prayer' : 'story',
-        startSegment: 0,
-        endSegment: input.segments.length - 1,
+        startSegment: start,
+        endSegment: end,
         intensity: input.segments.some((item) => item.text.includes('প্রার্থনা')) ? 'reverent-calm' : 'story-illustration',
         visualRecommendation: 'image-broll',
         confidence: 0.8,
@@ -88,7 +97,7 @@ class MockAiProvider implements DirectorProvider {
       provider: this.name,
       model: this.model,
       runtimeMs: Date.now() - started,
-      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, runtimeMs: 0 }],
+      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, canonicalCoverage: 'pass' as const, runtimeMs: 0 }],
       rawResponses: [],
       analysis,
     };
@@ -96,15 +105,16 @@ class MockAiProvider implements DirectorProvider {
 }
 
 class SparseAiProvider extends MockAiProvider {
-  readonly name = 'sparse-mock-ai';
-  readonly cacheIdentity = 'sparse-mock-ai-fixture-v1';
-  async analyze(input: DirectorInput) {
+  readonly name: string = 'sparse-mock-ai';
+  readonly cacheIdentity: string = 'sparse-mock-ai-fixture-v1';
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     this.calls += 1;
+    const { start } = primaryRange(input);
     const analysis = resolveAIResponse({
       sections: [{
         sectionType: 'teaching',
-        startSegment: 0,
-        endSegment: 0,
+        startSegment: start,
+        endSegment: start,
         intensity: 'normal-teaching',
         visualRecommendation: 'speaker-full',
         confidence: 0.8,
@@ -117,9 +127,121 @@ class SparseAiProvider extends MockAiProvider {
       provider: this.name,
       model: this.model,
       runtimeMs: 1,
-      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, runtimeMs: 1 }],
+      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, canonicalCoverage: 'fail' as const, runtimeMs: 1 }],
       rawResponses: [],
       analysis,
+    };
+  }
+}
+
+/** CASE D: returns a section covering only context-overlap segments. */
+class ContextOnlyAiProvider extends MockAiProvider {
+  readonly name: string = 'context-only-mock-ai';
+  readonly cacheIdentity: string = 'context-only-mock-ai-fixture-v1';
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
+    this.calls += 1;
+    const { start } = primaryRange(input);
+    const contextIndex = start > 0 ? start - 1 : input.segments.length - 1;
+    const analysis = resolveAIResponse({
+      sections: [{
+        sectionType: 'teaching',
+        startSegment: contextIndex,
+        endSegment: contextIndex,
+        intensity: 'normal-teaching',
+        visualRecommendation: 'speaker-full',
+        confidence: 0.8,
+        reason: 'Context-only fixture incorrectly answers for an adjacent chunk.',
+      }],
+      overallConfidence: 0.8,
+    }, input);
+    return {
+      providerResult: 'ai-success' as const,
+      provider: this.name,
+      model: this.model,
+      runtimeMs: 1,
+      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, canonicalCoverage: 'fail' as const, runtimeMs: 1 }],
+      rawResponses: [],
+      analysis,
+    };
+  }
+}
+
+/** CASE E: covers every primary segment with an explicit AI no-change decision. */
+class NoChangeAiProvider extends MockAiProvider {
+  readonly name: string = 'no-change-mock-ai';
+  readonly cacheIdentity: string = 'no-change-mock-ai-fixture-v1';
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
+    this.calls += 1;
+    const { start, end } = primaryRange(input);
+    const analysis = resolveAIResponse({
+      sections: Array.from({ length: end - start + 1 }, (_, offset) => ({
+        sectionType: 'teaching' as const,
+        startSegment: start + offset,
+        endSegment: start + offset,
+        intensity: 'reverent-calm' as const,
+        visualRecommendation: 'speaker-full' as const,
+        confidence: 0.8,
+        reason: 'Explicit AI no-change decision for Reverent Retention.',
+      })),
+      overallConfidence: 0.8,
+    }, input);
+    return {
+      providerResult: 'ai-success' as const,
+      provider: this.name,
+      model: this.model,
+      runtimeMs: 1,
+      attempts: [{ attempt: 1, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, canonicalCoverage: 'pass' as const, runtimeMs: 1 }],
+      rawResponses: [],
+      analysis,
+    };
+  }
+}
+
+/** CASE B: omits one primary range, then a bounded repair returns exactly the missing range. */
+class RepairableAiProvider extends SparseAiProvider {
+  readonly name: string = 'repairable-mock-ai';
+  readonly cacheIdentity: string = 'repairable-mock-ai-fixture-v1';
+  repairCalls = 0;
+  async repairCoverage(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult> {
+    this.repairCalls += 1;
+    const analysis = resolveAIResponse({
+      sections: request.missingSegmentIndices.map((index) => ({
+        sectionType: 'teaching' as const,
+        startSegment: index,
+        endSegment: index,
+        intensity: 'normal-teaching' as const,
+        visualRecommendation: 'speaker-full' as const,
+        confidence: 0.7,
+        reason: 'Bounded AI coverage repair returned an explicit no-change decision.',
+      })),
+      overallConfidence: 0.7,
+    }, request.input);
+    return {
+      providerResult: 'ai-success' as const,
+      provider: this.name,
+      model: this.model,
+      runtimeMs: 1,
+      attempts: [{ attempt: request.attempt, parse: 'pass' as const, schema: 'pass' as const, segmentReferences: 'pass' as const, semanticOutput: 'pass' as const, canonicalCoverage: 'pass' as const, runtimeMs: 1, phase: 'coverage-repair' as const }],
+      rawResponses: [],
+      analysis,
+    };
+  }
+}
+
+/** CASE C: omits a primary range and the bounded repair also fails. */
+class FailingRepairAiProvider extends SparseAiProvider {
+  readonly name: string = 'failing-repair-mock-ai';
+  readonly cacheIdentity: string = 'failing-repair-mock-ai-fixture-v1';
+  repairCalls = 0;
+  async repairCoverage(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult> {
+    this.repairCalls += 1;
+    return {
+      providerResult: 'provider-failure' as const,
+      provider: this.name,
+      model: this.model,
+      runtimeMs: 1,
+      attempts: [{ attempt: request.attempt, parse: 'fail' as const, schema: 'fail' as const, segmentReferences: 'fail' as const, semanticOutput: 'fail' as const, canonicalCoverage: 'fail' as const, runtimeMs: 1, phase: 'coverage-repair' as const, error: 'Fixture repair failed.' }],
+      rawResponses: [],
     };
   }
 }
@@ -137,15 +259,16 @@ class ThrowingProvider implements DirectorProvider {
 }
 
 class InvalidAiProvider extends MockAiProvider {
-  readonly name = 'invalid-mock-ai';
-  readonly cacheIdentity = 'invalid-mock-ai-fixture-v1';
-  async analyze(input: DirectorInput) {
+  readonly name: string = 'invalid-mock-ai';
+  readonly cacheIdentity: string = 'invalid-mock-ai-fixture-v1';
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     const result = await super.analyze(input);
+    const analysis = result.analysis!;
     return {
       ...result,
       analysis: {
-        ...result.analysis,
-        sections: result.analysis.sections.map((section, index) => index === 0 ? { ...section, start: section.start + 1 } : section),
+        ...analysis,
+        sections: analysis.sections.map((section, index) => index === 0 ? { ...section, start: section.start + 1 } : section),
       },
     };
   }
@@ -195,6 +318,36 @@ async function main(): Promise<void> {
   assert.equal(invalidProvider.provenance.providerStatus, 'FAILED');
   assert.match(invalidProvider.provenance.fallbackReason ?? '', /timing does not match/);
 
+  const coverageTarget = { segments: transcript.segments, primarySegmentIds: transcript.segments.slice(0, 4).map((item) => item.id) };
+  const coverageSection = (ids: string[]) => ({
+    id: `coverage-${ids.join('-')}`,
+    start: transcript.segments.find((item) => item.id === ids[0])!.start,
+    end: transcript.segments.find((item) => item.id === ids.at(-1)!)!.end,
+    transcriptText: '',
+    sourceSegmentIds: ids,
+    type: 'teaching' as const,
+    intensity: 'normal-teaching' as const,
+    visualRecommendation: 'speaker-full' as const,
+    confidence: 0.8,
+    reason: 'Coverage validator fixture.',
+  });
+  const complete = validateCanonicalCoverage([coverageSection(coverageTarget.primarySegmentIds)], coverageTarget);
+  assert.equal(complete.status, 'COMPLETE');
+  assert.equal(complete.coveragePercent, 100);
+  const incomplete = validateCanonicalCoverage([coverageSection(coverageTarget.primarySegmentIds.slice(0, 2))], coverageTarget);
+  assert.equal(incomplete.status, 'INCOMPLETE');
+  assert.deepEqual(incomplete.missingPrimaryIds, coverageTarget.primarySegmentIds.slice(2));
+  assert.equal(incomplete.missingRanges.length, 1);
+  const duplicated = validateCanonicalCoverage([coverageSection(coverageTarget.primarySegmentIds), coverageSection(coverageTarget.primarySegmentIds.slice(0, 1))], coverageTarget);
+  assert.equal(duplicated.status, 'INVALID');
+  assert.ok(duplicated.duplicatePrimaryIds.length > 0);
+  const contextMisuse = validateCanonicalCoverage([coverageSection([transcript.segments[5].id])], coverageTarget);
+  assert.equal(contextMisuse.status, 'INVALID');
+  assert.deepEqual(contextMisuse.contextOnlyIdsUsedAsPrimary, [transcript.segments[5].id]);
+  const unknownId = validateCanonicalCoverage([{ ...coverageSection([coverageTarget.primarySegmentIds[0]]), sourceSegmentIds: ['not-canonical'] }], coverageTarget);
+  assert.equal(unknownId.status, 'INVALID');
+  assert.deepEqual(unknownId.invalidSegmentIds, ['not-canonical']);
+
   const cacheRoot = await mkdtemp(join(tmpdir(), 'sermon-director-v1-1-'));
   try {
     const firstProvider = new MockAiProvider();
@@ -208,7 +361,15 @@ async function main(): Promise<void> {
       cacheRoot,
       chunkConfig: { targetSegments: 4, maxSegments: 5, overlapSegments: 1, sentenceLookback: 2 },
     });
+    // CASE A: complete coverage yields pure AI provenance with no fallback.
     assert.equal(first.provenance.source, 'ai');
+    assert.equal(first.provenance.providerStatus, 'SUCCESS');
+    assert.equal(first.provenance.fallbackUsed, false);
+    assert.equal(first.provenance.canonicalCoverageValidation, 'PASS');
+    assert.equal(first.coverage.canonicalCoverageComplete, true);
+    assert.equal(first.coverage.coveragePercent, 100);
+    assert.equal(first.coverage.deterministicGapFilledSegmentCount, 0);
+    assert.equal(first.coverage.providerSuccessCount, first.coverage.providerChunkCount);
     assert.ok(firstProvider.calls > 0);
     assert.ok(first.chunkExecutions.every((item) => !item.cache.hit));
     assert.ok(second.chunkExecutions.every((item) => item.cache.hit));
@@ -228,7 +389,64 @@ async function main(): Promise<void> {
     });
     assert.equal(sparse.provenance.source, 'mixed');
     assert.equal(sparse.provenance.fallbackUsed, true);
+    assert.equal(sparse.provenance.canonicalCoverageValidation, 'FAIL');
+    assert.equal(sparse.coverage.canonicalCoverageComplete, false);
+    assert.ok(sparse.coverage.deterministicGapFilledSegmentCount > 0);
+    assert.ok(sparse.coverage.coveragePercent < 100);
     assert.ok(sparse.reconciliation.records.some((record) => record.type === 'gap-fill'));
+
+    // CASE B: bounded AI repair completes the missing primary range and pure AI becomes possible.
+    const repairable = new RepairableAiProvider();
+    const repaired = await runFullSermonDirector(transcript, {
+      provider: repairable,
+      chunkConfig: { targetSegments: 4, maxSegments: 5, overlapSegments: 1, sentenceLookback: 2 },
+    });
+    assert.ok(repairable.repairCalls > 0);
+    assert.equal(repaired.provenance.source, 'ai');
+    assert.equal(repaired.provenance.providerStatus, 'SUCCESS');
+    assert.equal(repaired.provenance.fallbackUsed, false);
+    assert.equal(repaired.coverage.canonicalCoverageComplete, true);
+    assert.equal(repaired.coverage.coveragePercent, 100);
+    assert.equal(repaired.coverage.deterministicGapFilledSegmentCount, 0);
+    assert.ok(repaired.coverage.coverageRepairAttempts > 0);
+    assert.ok(repaired.coverage.coverageRepairSuccesses > 0);
+    assert.ok(repaired.provenance.attempts.some((attempt) => attempt.phase === 'coverage-repair'));
+
+    // CASE C: repair fails, deterministic gap-fill remains and the run stays mixed.
+    const failingRepair = new FailingRepairAiProvider();
+    const unrepaired = await runFullSermonDirector(transcript, {
+      provider: failingRepair,
+      chunkConfig: { targetSegments: 4, maxSegments: 5, overlapSegments: 1, sentenceLookback: 2 },
+    });
+    assert.ok(failingRepair.repairCalls > 0);
+    assert.equal(unrepaired.provenance.source, 'mixed');
+    assert.equal(unrepaired.provenance.fallbackUsed, true);
+    assert.equal(unrepaired.coverage.canonicalCoverageComplete, false);
+    assert.ok(unrepaired.coverage.deterministicGapFilledSegmentCount > 0);
+    assert.equal(unrepaired.coverage.coverageRepairSuccesses, 0);
+    assert.ok(unrepaired.chunkExecutions.every(({ execution }) => execution.provenance.coverage!.repairAttempts <= 1));
+
+    // CASE D: context-overlap-only output is rejected as primary coverage.
+    const contextOnly = await runFullSermonDirector(transcript, {
+      provider: new ContextOnlyAiProvider(),
+      chunkConfig: { targetSegments: 4, maxSegments: 5, overlapSegments: 1, sentenceLookback: 2 },
+      maxCoverageRepairAttempts: 0,
+    });
+    assert.equal(contextOnly.provenance.fallbackUsed, true);
+    assert.equal(contextOnly.coverage.canonicalCoverageComplete, false);
+    assert.ok(contextOnly.chunkExecutions.some(({ execution }) => execution.provenance.coverage!.report.contextOnlyIdsUsedAsPrimary.length > 0
+      || execution.provenance.coverage!.report.missingPrimaryIds.length > 0));
+
+    // CASE E: explicit AI no-change everywhere is complete coverage with zero visual events.
+    const noChange = await runFullSermonDirector(transcript, {
+      provider: new NoChangeAiProvider(),
+      chunkConfig: { targetSegments: 4, maxSegments: 5, overlapSegments: 1, sentenceLookback: 2 },
+    });
+    assert.equal(noChange.provenance.source, 'ai');
+    assert.equal(noChange.provenance.fallbackUsed, false);
+    assert.equal(noChange.coverage.canonicalCoverageComplete, true);
+    assert.equal(noChange.coverage.coveragePercent, 100);
+    assert.ok(noChange.reconciliation.analysis.sections.every((section) => section.visualRecommendation === 'speaker-full'));
     const differentIdentityProvider = new MockAiProvider('mock-ai-fixture-v2');
     await runFullSermonDirector(transcript, {
       provider: differentIdentityProvider,
@@ -341,12 +559,20 @@ async function main(): Promise<void> {
 
   const fallbackMetrics = measureDirectorResult(notConfigured.analysis, notConfigured.provenance, 120, sha256(transcript.originalTranscript));
   const aiResult = await executeDirector(inputFor(transcript), { provider: new MockAiProvider() });
-  const aiMetrics = measureDirectorResult(aiResult.analysis, aiResult.provenance, 120, sha256(transcript.originalTranscript));
+  const aiMetrics = measureDirectorResult(aiResult.analysis, aiResult.provenance, 120, sha256(transcript.originalTranscript), [], { providerChunkCount: 1, providerSuccessCount: 1 });
   const comparison = compareDirectorResults(fallbackMetrics, aiMetrics);
   assert.equal(comparison.fallback.fallbackUsed, true);
+  assert.equal(comparison.fallback.canonicalCoverageComplete, false);
+  assert.ok(comparison.fallback.deterministicGapFilledSegmentCount > 0);
   assert.equal(comparison.ai.fallbackUsed, false);
   assert.equal(comparison.ai.schemaValid, true);
   assert.equal(comparison.ai.canonicalRangeValid, true);
+  assert.equal(comparison.ai.canonicalCoverageComplete, true);
+  assert.equal(comparison.ai.coveragePercent, 100);
+  assert.equal(comparison.ai.deterministicGapFilledSegmentCount, 0);
+  assert.equal(comparison.ai.provenance, 'ai');
+  assert.equal(comparison.ai.providerChunkCount, 1);
+  assert.equal(comparison.ai.providerSuccessCount, 1);
 
   console.log(JSON.stringify({
     status: 'PASS',
@@ -367,6 +593,13 @@ async function main(): Promise<void> {
       'independent stage cache reuse and invalidation',
       'provider cache identity isolation',
       'AI-vs-fallback comparison metrics',
+      'coverage validator complete/incomplete/duplicate/invalid/context-only',
+      'CASE A complete AI coverage is pure AI',
+      'CASE B bounded AI repair restores complete coverage',
+      'CASE C failed repair keeps deterministic gap-fill and mixed provenance',
+      'CASE D context-overlap-only output rejected as primary coverage',
+      'CASE E explicit AI no-change everywhere is complete coverage',
+      'coverage-aware provider status semantics',
     ],
   }, null, 2));
 }

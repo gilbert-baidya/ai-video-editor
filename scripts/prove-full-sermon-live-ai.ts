@@ -4,6 +4,7 @@ import { compareDirectorResults, measureDirectorResult } from '../src/director-c
 import { OllamaDirectorProvider } from '../src/director.ts';
 import { runFullSermonDirector } from '../src/full-sermon-director.ts';
 import { canonicalTranscriptHash } from '../src/sermon-chunking.ts';
+import { DIRECTOR_COVERAGE_CONTRACT_VERSION } from '../src/canonical-coverage.ts';
 import { ensureDirectory, readJson, sha256, writeJson } from '../src/foundation.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -13,6 +14,7 @@ const model = process.env.SERMON_DIRECTOR_MODEL ?? 'qwen3:30b';
 const endpoint = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434';
 const providerMode = process.env.SERMON_DIRECTOR_PROVIDER ?? 'auto';
 const duration = 2560;
+const maxCoverageRepairAttempts = Number(process.env.SERMON_DIRECTOR_MAX_COVERAGE_REPAIR ?? '1');
 
 async function main(): Promise<void> {
   await ensureDirectory(resolve(artifacts, 'analysis'));
@@ -33,12 +35,15 @@ async function main(): Promise<void> {
     provider: provider?.name ?? 'none',
     model: provider?.model ?? 'none',
     chunking: 'sentence-aware-v1.1',
-    reconciliation: 'canonical-policy-v1.1',
+    reconciliation: 'canonical-policy-v1.2',
+    coverageContract: DIRECTOR_COVERAGE_CONTRACT_VERSION,
+    maxCoverageRepairAttempts,
   };
   const configHash = sha256(JSON.stringify(configuration));
   const result = await runFullSermonDirector(transcript, {
     provider,
     cacheRoot: resolve(artifacts, 'cache'),
+    maxCoverageRepairAttempts,
   });
   const allChunksLive = result.chunkExecutions.every(({ execution }) => execution.provenance.source === 'ai');
   const fallbackChunkCount = result.chunkExecutions.filter(({ execution }) => execution.provenance.fallbackUsed).length;
@@ -53,11 +58,16 @@ async function main(): Promise<void> {
     durationMs: 0,
     schemaValidation: 'NOT_RUN' as const,
     canonicalRangeValidation: 'NOT_RUN' as const,
+    canonicalCoverageValidation: 'NOT_RUN' as const,
+    canonicalCoverageComplete: false,
     attempts: [],
   };
   const comparison = compareDirectorResults(
     measureDirectorResult(baselineFallback, fallbackProvenance, duration, transcriptHash),
-    measureDirectorResult(result.reconciliation.analysis, result.provenance, duration, transcriptHash),
+    measureDirectorResult(result.reconciliation.analysis, result.provenance, duration, transcriptHash, [], {
+      providerChunkCount: result.coverage.providerChunkCount,
+      providerSuccessCount: result.coverage.providerSuccessCount,
+    }),
   );
   const ledgers = result.chunkExecutions.map(({ chunk, execution, cache, durationMs }) => ({
     ...chunk,
@@ -68,6 +78,16 @@ async function main(): Promise<void> {
     orchestrationMs: durationMs,
     attempts: execution.provenance.attempts,
     structuredOutput: execution.provenance.schemaValidation === 'PASS' && execution.provenance.canonicalRangeValidation === 'PASS',
+    canonicalCoverageComplete: execution.provenance.canonicalCoverageComplete,
+    canonicalCoverage: execution.provenance.coverage ? {
+      status: execution.provenance.coverage.report.status,
+      primarySegmentCount: execution.provenance.coverage.report.primarySegmentCount,
+      coveredPrimarySegmentCount: execution.provenance.coverage.report.coveredPrimarySegmentCount,
+      missingPrimaryIds: execution.provenance.coverage.report.missingPrimaryIds,
+      coveragePercent: execution.provenance.coverage.report.coveragePercent,
+      repairAttempts: execution.provenance.coverage.repairAttempts,
+      repairSuccesses: execution.provenance.coverage.repairSuccesses,
+    } : undefined,
     fallback: execution.provenance.fallbackUsed,
     fallbackReason: execution.provenance.fallbackReason,
     sectionCount: execution.analysis.sections.length,
@@ -76,7 +96,7 @@ async function main(): Promise<void> {
   const payload = {
     configHash,
     configuration,
-    architectureVersion: 'provider-neutral-v1.1',
+    architectureVersion: 'provider-neutral-v1.2',
     transcriptHash,
     providerMode,
     model: provider?.model,
@@ -85,6 +105,7 @@ async function main(): Promise<void> {
     totalRuntimeMs: result.provenance.durationMs,
     allChunksLive,
     fallbackChunkCount,
+    coverage: result.coverage,
     provenance: result.provenance,
     analysis: result.reconciliation.analysis,
     merge: { records: result.reconciliation.records, sectionProvenance: result.reconciliation.sectionProvenance },
@@ -109,6 +130,12 @@ async function main(): Promise<void> {
     runtimeMs: result.provenance.durationMs,
     schemaValidation: result.provenance.schemaValidation,
     canonicalRangeValidation: result.provenance.canonicalRangeValidation,
+    canonicalCoverageValidation: result.provenance.canonicalCoverageValidation,
+    canonicalCoverageComplete: result.provenance.canonicalCoverageComplete,
+  });
+  await writeJson(resolve(artifacts, 'analysis/canonical-coverage.json'), {
+    ...result.coverage,
+    report: result.reconciliation.coverage,
   });
   await writeJson(resolve(artifacts, 'analysis/source-integrity.json'), {
     transcriptReusedFrom: resolve(v1Root, 'transcript.json'),
@@ -125,6 +152,13 @@ async function main(): Promise<void> {
     fallbackChunkCount,
     chunks: result.chunks.length,
     sections: result.reconciliation.analysis.sections.length,
+    primaryCanonicalSegmentCount: result.coverage.primaryCanonicalSegmentCount,
+    aiCoveredPrimarySegmentCount: result.coverage.aiCoveredPrimarySegmentCount,
+    deterministicGapFilledSegmentCount: result.coverage.deterministicGapFilledSegmentCount,
+    coveragePercent: result.coverage.coveragePercent,
+    canonicalCoverageComplete: result.coverage.canonicalCoverageComplete,
+    coverageRepairAttempts: result.coverage.coverageRepairAttempts,
+    coverageRepairSuccesses: result.coverage.coverageRepairSuccesses,
   }, null, 2));
 }
 

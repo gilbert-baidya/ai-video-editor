@@ -11,7 +11,10 @@
 | Deterministic chunk reconciliation | IMPLEMENTED, OFFICE-VALIDATED |
 | Independent stage cache | IMPLEMENTED, OFFICE-VALIDATED |
 | AI-versus-fallback comparison harness | IMPLEMENTED, OFFICE-VALIDATED WITH MOCK AI |
-| Live Ollama/Qwen execution | PERSONAL-MAC-VALIDATION-PENDING |
+| Canonical coverage contract and validator | IMPLEMENTED, OFFICE-VALIDATED |
+| Bounded AI coverage repair | IMPLEMENTED, OFFICE-VALIDATED WITH MOCK AI |
+| Provider status semantics correction | IMPLEMENTED, OFFICE-VALIDATED |
+| Live Ollama/Qwen execution | PERSONAL-MAC-RETEST-PENDING |
 | Full 42:40 render | PERSONAL-MAC-VALIDATION-PENDING |
 
 No Ollama runtime, model, Python environment, Homebrew package, Docker service, or external application was installed or invoked during office validation.
@@ -36,6 +39,57 @@ source: deterministic-fallback
 fallbackUsed: true
 fallbackReason: explicit diagnostic
 ```
+
+## Personal-Mac finding: successful AI chunks, mixed global result
+
+The personal-Mac run on `feat/full-sermon-pilot-v1-1-provider-abstraction` (`5539dcd`) with Ollama 0.33.2 and `qwen3:30b` produced six chunks that all reported `ai-success` with structurally valid output and no per-chunk fallback. The global run still reported `fallbackUsed: true` and `source: mixed`.
+
+Root cause: schema validity was conflated with canonical completeness. The provider contract asked for meaningful semantic sections but never required a decision for every primary canonical segment, and per-chunk validation only checked that the ranges it did return were well formed. Segments the model chose to say nothing about passed every check, then reconciliation deterministically gap-filled them, correctly marking the run mixed.
+
+The reported `status: NOT_CONFIGURED` was a second, separate defect: the deterministic gap-fill provenance hard-coded `NOT_CONFIGURED`, and aggregation fell through to that value even though the provider was reachable and every chunk succeeded.
+
+This is not yet a valid pure-AI run. The personal-Mac retest has not been performed.
+
+## Canonical coverage contract
+
+The provider contract now distinguishes primary segments from context-only overlap segments. Numbered prompt segments carry an explicit `role`, and the prompt requires:
+
+- every primary segment index to appear in exactly one returned section;
+- context-only segments to be read for meaning but never returned;
+- an explicit decision (for example `speaker-full` or `none`) when a primary segment needs no visual intervention.
+
+AI still returns only numbered ranges. The application resolves canonical IDs and timing.
+
+## Coverage validator
+
+`validateCanonicalCoverage` is deterministic and independent of schema validation. It reports covered primary IDs, missing primary IDs, duplicate coverage, conflicting sections, invalid IDs, context-only IDs incorrectly used as primary output, coverage percent, and the contiguous missing ranges. Three states are tracked separately and never conflated:
+
+```text
+schemaValidation
+canonicalRangeValidation
+canonicalCoverageValidation / canonicalCoverageComplete
+```
+
+## Bounded AI repair
+
+If provider output is otherwise valid but misses primary canonical segments, orchestration issues a bounded repair request to the same provider for the uncovered ranges only, with full sermon context preserved. `maxCoverageRepairAttempts` defaults to `1` and never loops. Repair sections are accepted only when they cover exclusively still-missing primary segments; coverage is then re-validated. If coverage becomes complete, the run may be pure AI. If not, deterministic gap-fill is retained, the run stays mixed, and full-render validation is blocked.
+
+Deterministic gap-fill is preserved as a safety mechanism, and its provenance is never converted into AI provenance.
+
+## Provider status semantics
+
+```text
+NOT_CONFIGURED  no provider/model configuration exists
+UNAVAILABLE     configured provider cannot be reached
+FAILED          provider executed but failed
+PARTIAL         provider succeeded but fallback was still required
+MIXED           aggregate of units with differing outcomes
+SUCCESS         valid complete provider result with no fallback
+```
+
+`AVAILABLE` is retained as an accepted alias of `SUCCESS` for older artifacts.
+
+A run may report `fallbackUsed: false` only when the provider is available, every required chunk call succeeds, schema validation passes, canonical range validation passes, all primary canonical segments are covered by AI decisions, and no deterministic canonical gap-fill was required. Explicit AI no-change decisions count as AI coverage.
 
 ## Canonical chunking
 
@@ -86,7 +140,7 @@ The stage cache uses a deterministic key composed of stage name, implementation 
 11. rendering
 12. QA
 
-Chunk analysis is cached independently, allowing a restarted run to reuse completed chunks. Provider-unavailable and provider-failure results are not cached under an available provider identity, preventing an office fallback from masking a later personal-Mac AI run. Review changes can use a later-stage key without invalidating transcript, chunks, Director analysis, media inspection, or placement.
+Coverage validation and repair participate in cache identity. The Director analysis and Director normalization stages moved to `v1.2` and include the coverage contract version and the configured repair bound, so results produced under the older coverage rules cannot be reused as valid pure AI. Chunk analysis is cached independently, allowing a restarted run to reuse completed chunks. Provider-unavailable and provider-failure results are not cached under an available provider identity, preventing an office fallback from masking a later personal-Mac AI run. Review changes can use a later-stage key without invalidating transcript, chunks, Director analysis, media inspection, or placement.
 
 ## Performance audit
 
@@ -125,6 +179,12 @@ The bounded-memory benefit of the streaming source fingerprint is structurally e
 - review human-override provenance
 - independent cache reuse and invalidation
 - AI-versus-fallback metric generation using a mock provider
+- coverage validator complete, incomplete, duplicate, invalid, and context-only misuse states
+- CASE A: complete provider coverage yields pure AI provenance with no fallback
+- CASE B: one omitted primary range, then a mock repair returns the missing range and coverage becomes complete
+- CASE C: omitted range with a failing repair retains deterministic gap-fill, mixed provenance, and `fallbackUsed: true`
+- CASE D: context-overlap-only output is rejected as primary coverage
+- CASE E: all-primary explicit AI no-change is complete coverage with zero visual events and `fallbackUsed: false`
 
 The standard `typecheck` and Bengali tokenization checks remain required. No live AI inference or full render is part of office validation.
 
@@ -133,7 +193,8 @@ The standard `typecheck` and Bengali tokenization checks remain required. No liv
 Only the following remain:
 
 - Run the real Ollama adapter with `qwen3:30b`.
-- Confirm all chunks report AI source, schema PASS, and canonical range PASS.
+- Confirm all chunks report AI source, schema PASS, canonical range PASS, and canonical coverage complete.
+- Confirm `coveragePercent: 100` and `deterministicGapFilledSegmentCount: 0`.
 - Compare the stored deterministic baseline with live AI output.
 - Run bounded previews and inspect Review Workspace provenance.
 - Run the full-sermon proof and benchmark on the personal Mac.

@@ -116,14 +116,20 @@ function workspaceData(analysis: SermonAnalysis, plan: EditPlan, index: MediaInd
 async function main() {
   await Promise.all(['bounded', 'frames', 'frames/final', 'review', 'review-assets'].map((name) => ensureDirectory(resolve(artifacts, name))));
   const transcript = await readJson<TranscriptDocument>(resolve(v1, 'transcript.json'));
-  const liveResult = await readJson<{ allChunksLive: boolean; fallbackChunkCount: number; analysis: SermonAnalysis; architectureVersion: string; configHash: string; configuration: Record<string, unknown>; transcriptHash: string; provenance: DirectorExecutionProvenance; sectionProvenance: Record<string, DirectorExecutionProvenance>; chunks: Array<{ structuredOutput: boolean; fallback: boolean }> }>(resolve(artifacts, 'analysis/live-ai-result.json'));
+  const liveResult = await readJson<{ allChunksLive: boolean; fallbackChunkCount: number; analysis: SermonAnalysis; architectureVersion: string; configHash: string; configuration: Record<string, unknown>; transcriptHash: string; provenance: DirectorExecutionProvenance; sectionProvenance: Record<string, DirectorExecutionProvenance>; coverage: { canonicalCoverageComplete: boolean; coveragePercent: number; deterministicGapFilledSegmentCount: number }; chunks: Array<{ structuredOutput: boolean; fallback: boolean; canonicalCoverageComplete: boolean }> }>(resolve(artifacts, 'analysis/live-ai-result.json'));
   const transcriptHash = sha256(transcript.originalTranscript);
   const canonicalHash = canonicalTranscriptHash(transcript);
   const sourceFingerprint = await fileVersionFingerprint(source);
-  if (liveResult.architectureVersion !== 'provider-neutral-v1.1') throw new Error('Live Director artifact uses an unsupported architecture version.');
+  if (liveResult.architectureVersion !== 'provider-neutral-v1.2') throw new Error('Live Director artifact uses an unsupported architecture version.');
   if (liveResult.transcriptHash !== canonicalHash) throw new Error('Live Director artifact belongs to a different canonical transcript.');
   if (liveResult.configHash !== sha256(JSON.stringify(liveResult.configuration))) throw new Error('Live Director configuration hash is invalid.');
   if (!liveResult.allChunksLive || liveResult.fallbackChunkCount || liveResult.provenance.source !== 'ai' || liveResult.provenance.schemaValidation !== 'PASS' || liveResult.provenance.canonicalRangeValidation !== 'PASS' || liveResult.chunks.some((chunk) => chunk.fallback || !chunk.structuredOutput)) throw new Error('Full render is gated on fallback-free, schema-valid, canonical-range-valid live AI chunks.');
+  if (!liveResult.coverage?.canonicalCoverageComplete
+    || liveResult.coverage.coveragePercent !== 100
+    || liveResult.coverage.deterministicGapFilledSegmentCount !== 0
+    || liveResult.provenance.canonicalCoverageValidation !== 'PASS'
+    || !liveResult.provenance.canonicalCoverageComplete
+    || liveResult.chunks.some((chunk) => !chunk.canonicalCoverageComplete)) throw new Error('Full render is gated on 100% AI canonical coverage with zero deterministic gap-fill.');
   const analysis = liveResult.analysis;
   const input: DirectorInput = { transcript, segments: transcript.segments, projectDuration: duration, projectId: transcript.projectId };
   const resolvedAnalysisFailures = validateResolvedDirectorAnalysis(analysis, input);

@@ -11,6 +11,7 @@ import type {
   VisualRecommendation,
 } from './contracts.ts';
 import { resolveDisplayText, type ContentTrustPolicy } from './content-trust.ts';
+import { resolvePrimarySegmentIds, validateCanonicalCoverage } from './canonical-coverage.ts';
 import { sha256, validatePlan } from './foundation.ts';
 import { measureTranscriptIntegrity } from './transcript-integrity.ts';
 
@@ -19,6 +20,11 @@ export interface DirectorInput {
   segments: TranscriptSegment[];
   projectDuration: number;
   projectId: string;
+  /**
+   * Canonical segment IDs the provider must cover with explicit decisions. Segments outside
+   * this list are context-only overlap belonging to an adjacent chunk. Defaults to every segment.
+   */
+  primarySegmentIds?: string[];
 }
 
 export interface AISermonSection {
@@ -44,7 +50,9 @@ export interface ProviderAttempt {
   schema: 'pass' | 'fail';
   segmentReferences: 'pass' | 'fail';
   semanticOutput: 'pass' | 'fail';
+  canonicalCoverage?: 'pass' | 'fail' | 'not-run';
   runtimeMs: number;
+  phase?: 'analysis' | 'coverage-repair';
   error?: string;
 }
 
@@ -57,6 +65,13 @@ export interface DirectorProviderResult {
   rawResponses: Array<{ attempt: number; field: 'response' | 'thinking'; text: string }>;
   analysis?: SermonAnalysis;
   error?: string;
+}
+
+export interface DirectorCoverageRepairRequest {
+  input: DirectorInput;
+  missingSegmentIds: string[];
+  missingSegmentIndices: number[];
+  attempt: number;
 }
 
 export interface DirectorProviderAvailability {
@@ -79,9 +94,14 @@ export interface DirectorProvider {
   cacheIdentity: string;
   checkAvailability?(): Promise<DirectorProviderAvailability>;
   analyze(input: DirectorInput): Promise<DirectorProviderResult>;
+  /**
+   * Optional bounded coverage repair. Providers that implement this are asked for decisions
+   * covering ONLY the uncovered primary canonical segments.
+   */
+  repairCoverage?(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult>;
 }
 
-export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.1';
+export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.2';
 
 const sectionTypes = new Set<SermonSectionType>(['introduction', 'scripture-reading', 'teaching', 'main-point', 'illustration', 'story', 'testimony', 'question', 'application', 'transition', 'prayer', 'emotional-ministry', 'conclusion', 'altar-call']);
 const intensities = new Set<VisualIntensity>(['reverent-calm', 'normal-teaching', 'story-illustration', 'emphasis']);
@@ -151,6 +171,16 @@ export function validateDirectorInput(input: DirectorInput): void {
     const canonical = input.transcript.segments[index];
     if (supplied.id !== canonical.id || supplied.start !== canonical.start || supplied.end !== canonical.end || supplied.text !== canonical.text) throw new Error(`Director segment ${index} does not match the canonical transcript.`);
   }
+  if (input.primarySegmentIds) {
+    if (!input.primarySegmentIds.length) throw new Error('Director primary canonical segment IDs must not be empty.');
+    const canonicalIds = new Set(input.segments.map((segment) => segment.id));
+    const seen = new Set<string>();
+    for (const id of input.primarySegmentIds) {
+      if (!canonicalIds.has(id)) throw new Error(`Director primary canonical segment ${id} is not part of the input segments.`);
+      if (seen.has(id)) throw new Error(`Director primary canonical segment ${id} is listed more than once.`);
+      seen.add(id);
+    }
+  }
   const integrity = measureTranscriptIntegrity(input.transcript.originalTranscript, input.transcript.segments);
   if (integrity.status !== 'PASS' && !input.transcript.approved && input.transcript.textSource !== 'hybrid-reviewed') throw new Error(`Canonical transcript integrity requires review (${integrity.status}).`);
 }
@@ -204,8 +234,35 @@ export function resolveAIResponse(response: AISermonResponse, input: DirectorInp
   };
 }
 
+export function primarySegmentIndices(input: DirectorInput): number[] {
+  if (!input.primarySegmentIds) return input.segments.map((_, index) => index);
+  const positions = new Map(input.segments.map((segment, index) => [segment.id, index]));
+  return input.primarySegmentIds.map((id) => {
+    const index = positions.get(id);
+    if (index === undefined) throw new Error(`Primary canonical segment ${id} is not part of the Director input.`);
+    return index;
+  }).sort((left, right) => left - right);
+}
+
+function numberedSegments(input: DirectorInput): string {
+  const primary = new Set(primarySegmentIndices(input));
+  return input.segments.map((segment, index) => JSON.stringify({
+    index,
+    role: primary.has(index) ? 'primary' : 'context-only',
+    canonicalId: segment.id,
+    text: segment.text,
+  })).join('\n');
+}
+
+const coverageRules = [
+  'Segments marked "primary" are your responsibility. Every primary segment index must appear in exactly one returned section.',
+  'Segments marked "context-only" belong to an adjacent chunk. Read them for meaning, but never include them in a returned range.',
+  'If a primary segment needs no visual intervention, still return a section for it with visualRecommendation "speaker-full" or "none". Silence is not allowed.',
+  'Sections must be ordered and must not overlap.',
+];
+
 export function promptFor(input: DirectorInput): string {
-  const segments = input.segments.map((segment, index) => JSON.stringify({ index, canonicalId: segment.id, text: segment.text })).join('\n');
+  const indices = primarySegmentIndices(input);
   return [
     'You are a reverent Bengali sermon semantic extractor.',
     'Return only one JSON object. Do not include markdown, prose, timestamps, project IDs, or source IDs.',
@@ -215,8 +272,23 @@ export function promptFor(input: DirectorInput): string {
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
     'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
     'JSON shape: {"sections":[{"sectionType":"main-point","startSegment":0,"endSegment":0,"intensity":"emphasis","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
-    'Do not omit required fields. Use empty sections only if the transcript has no meaningful semantic structure.',
-    `Numbered transcript segments:\n${segments}`,
+    'Do not omit required fields.',
+    ...coverageRules,
+    `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
+    `Numbered transcript segments:\n${numberedSegments(input)}`,
+  ].join('\n');
+}
+
+export function coverageRepairPromptFor(input: DirectorInput, missingIndices: number[]): string {
+  return [
+    'You are a reverent Bengali sermon semantic extractor completing an incomplete previous answer.',
+    'Return only one JSON object using the same schema as before.',
+    'Return sections ONLY for the uncovered primary segment indices listed below. Do not repeat already covered segments.',
+    'Every listed index must appear in exactly one returned section.',
+    'If a segment needs no visual intervention, return it with visualRecommendation "speaker-full" or "none".',
+    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    `Uncovered primary segment indices: ${missingIndices.join(', ')}.`,
+    `Numbered transcript segments (full context):\n${numberedSegments(input)}`,
   ].join('\n');
 }
 
@@ -271,7 +343,12 @@ export class OllamaDirectorProvider implements DirectorProvider {
     }
   }
 
-  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
+  private async generate(
+    input: DirectorInput,
+    prompt: string,
+    phase: 'analysis' | 'coverage-repair',
+    requiredSegmentIds: string[],
+  ): Promise<DirectorProviderResult> {
     validateDirectorInput(input);
     const started = Date.now();
     const attempts: ProviderAttempt[] = [];
@@ -279,11 +356,11 @@ export class OllamaDirectorProvider implements DirectorProvider {
     let lastError = 'Unknown structured-output failure';
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       const attemptStarted = Date.now();
-      const record: ProviderAttempt = { attempt, parse: 'fail', schema: 'fail', segmentReferences: 'fail', semanticOutput: 'fail', runtimeMs: 0 };
+      const record: ProviderAttempt = { attempt, parse: 'fail', schema: 'fail', segmentReferences: 'fail', semanticOutput: 'fail', canonicalCoverage: 'not-run', runtimeMs: 0, phase };
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-        const requestBody = { model: this.model, prompt: promptFor(input), stream: false, format: 'json', think: this.disableThinking ? false : undefined, options: { temperature: 0.1 } };
+        const requestBody = { model: this.model, prompt, stream: false, format: 'json', think: this.disableThinking ? false : undefined, options: { temperature: 0.1 } };
         let response: Response;
         try {
           response = await fetch(`${this.endpoint}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody), signal: controller.signal });
@@ -311,9 +388,18 @@ export class OllamaDirectorProvider implements DirectorProvider {
         record.segmentReferences = 'pass';
         record.semanticOutput = semantic.sections.length ? 'pass' : 'fail';
         if (record.semanticOutput !== 'pass') throw new Error('AI response contained no semantic sections.');
+        const analysis = resolveAIResponse(semantic, input);
+        const coverage = validateCanonicalCoverage(analysis.sections, { segments: input.segments, primarySegmentIds: requiredSegmentIds });
+        record.canonicalCoverage = coverage.complete ? 'pass' : 'fail';
         record.runtimeMs = Date.now() - attemptStarted;
+        if (!coverage.complete) {
+          attempts.push(record);
+          lastError = `Attempt ${attempt}: canonical coverage incomplete. ${coverage.failures.join(' ')}`;
+          record.error = lastError;
+          continue;
+        }
         attempts.push(record);
-        return { providerResult: attempt === 1 ? 'ai-success' : 'ai-retry-success', provider: this.name, model: this.model, runtimeMs: Date.now() - started, attempts, rawResponses, analysis: resolveAIResponse(semantic, input) };
+        return { providerResult: attempt === 1 ? 'ai-success' : 'ai-retry-success', provider: this.name, model: this.model, runtimeMs: Date.now() - started, attempts, rawResponses, analysis };
       } catch (error) {
         record.runtimeMs = Date.now() - attemptStarted;
         record.error = error instanceof Error ? error.message : String(error);
@@ -322,6 +408,20 @@ export class OllamaDirectorProvider implements DirectorProvider {
       }
     }
     return { providerResult: 'provider-failure', provider: this.name, model: this.model, runtimeMs: Date.now() - started, attempts, rawResponses, error: lastError };
+  }
+
+  async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
+    const required = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
+    return this.generate(input, promptFor(input), 'analysis', required);
+  }
+
+  async repairCoverage(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult> {
+    return this.generate(
+      request.input,
+      coverageRepairPromptFor(request.input, request.missingSegmentIndices),
+      'coverage-repair',
+      request.missingSegmentIds,
+    );
   }
 }
 
