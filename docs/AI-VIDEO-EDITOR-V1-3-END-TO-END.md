@@ -152,8 +152,21 @@ The dedicated V1.3 suite uses small in-memory/file fixtures and a mocked rendere
 
 No Ollama, Whisper model, downloader, Docker, Homebrew package, Python environment, external app, system service, 42:40 render, or live provider was installed or invoked.
 
-## Exact remaining real-runtime validation
+## Real runtime validation
 
-**PERSONAL-MAC-VALIDATION-PENDING**
+- **Local Video E2E:** **VALIDATED** (see `docs/PERSONAL-MAC-V1-3-VALIDATION.md`)
+  - Project ID: `project-62d0c127-4d44-4e28-adb0-04f832c3a964`
+  - 120s source clip (`bounded-sermon-peter-120s.mp4`)
+  - Streaming local ingest & source immutability
+  - Real Whisper CLI transcription (`ggml-small.bin`)
+  - Real Ollama `qwen3:30b` Director (18/18 canonical segments, 100% AI coverage, 0 fallback)
+  - Review workspace persistence & restart/resume PASS
+  - Remotion 1080p render PASS (216.42s wall-clock)
+  - Automatic final QA PASS (all 7 gates)
+  - Video streaming & export PASS
+- **YouTube Ingestion:** **PENDING** (to be validated separately)
 
-Follow `docs/PERSONAL-MAC-V1-3-VALIDATION.md`. Begin with one bounded 2–5 minute sermon, validate restart/resume, then validate a similarly bounded render and QA before considering longer media.
+### BENGALI TRANSCRIPTION QUALITY NOTE
+
+The personal-Mac proof confirmed valid Bengali Unicode/script integrity after script correction, but Unicode-script validity must not be treated as proof of semantic transcription accuracy.
+Do not claim perfect transcript accuracy.

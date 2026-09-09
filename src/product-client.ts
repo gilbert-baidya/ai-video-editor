@@ -40,7 +40,7 @@ export const productClient = {
     });
   },
   startStage: async (projectId: string, stage: ProductStage) => {
-    const action = stage === 'transcript' ? 'transcribe' : stage;
+    const action = stage === 'transcript' ? 'transcribe' : stage === 'director' ? 'analyze' : stage;
     return (await request<{ job: ProductJob }>(`/api/projects/${projectId}/${action}`, { method: 'POST' })).job;
   },
   reviewWorkspace: (projectId: string) => request<ReviewDataPayload>(`/api/projects/${projectId}/review-workspace`),

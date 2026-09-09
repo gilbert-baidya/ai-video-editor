@@ -110,8 +110,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     if (expectedBytes !== undefined && (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0)) throw new Error('Invalid Content-Length.');
     const metadata = await streamUpload(request, store.sourceDirectory(projectId), rawName, request.headers['content-type'], expectedBytes);
     sendJson(response, 200, { project: await orchestrator.attachUploadedSource(projectId, metadata) });
-  } else if (request.method === 'POST' && ['ingest', 'transcribe', 'analyze', 'render', 'qa'].includes(action ?? '')) {
-    sendJson(response, 202, { job: await orchestrator.startStage(projectId, action === 'transcribe' ? 'transcript' : action as 'ingest' | 'director' | 'render' | 'qa') });
+  } else if (request.method === 'POST' && ['ingest', 'transcribe', 'analyze', 'director', 'render', 'qa'].includes(action ?? '')) {
+    const stage: 'ingest' | 'transcript' | 'director' | 'render' | 'qa' =
+      action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
+    sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
   } else if (request.method === 'PUT' && action === 'review') {
     const input = await bodyJson<{ review: ReviewState; approvedPlan: EditPlan; ready: boolean; blockers: string[] }>(request);
     if (!Array.isArray(input.blockers) || typeof input.ready !== 'boolean') throw new Error('Review readiness and blockers are required.');

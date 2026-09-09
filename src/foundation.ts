@@ -94,15 +94,38 @@ const timestamp = (value: string | undefined): number => {
   return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : Number(value);
 };
 
+function toBengaliScript(text: string): string {
+  const clean = text.replace(/[\u0C00-\u0D7F]+/g, '').replace(/(.{1,6})\1{4,}/gu, '');
+  return [...clean].map((c) => {
+    const code = c.charCodeAt(0);
+    return code >= 0x0900 && code <= 0x097F ? String.fromCharCode(code + 0x80) : c;
+  }).join('').replace(/[\u0000-\u001f\ufffd]/g, '').normalize('NFC').trim();
+}
+
 export async function transcribeAndAlign(audio: string, outputBase: string, model: string): Promise<TranscriptDocument> {
   await run('/opt/homebrew/bin/whisper-cli', ['-m', model, '-f', audio, '-oj', '-ojf', '-l', 'bn', '-of', outputBase]);
   const raw = await readJson<WhisperJson>(`${outputBase}.json`);
-  const segments: TranscriptSegment[] = (raw.transcription ?? []).map((item, index) => {
+  const rawItems: Array<{ offsets?: { from: number; to: number }; timestamps?: { from: string; to: string }; text?: string; tokens?: Array<{ offsets?: { from: number; to: number }; text?: string; p?: number }> }> = [];
+  for (const item of (raw.transcription ?? [])) {
+    const start = item.offsets ? item.offsets.from / 1000 : timestamp(item.timestamps?.from);
+    const end = item.offsets ? item.offsets.to / 1000 : timestamp(item.timestamps?.to);
+    if (end <= start) {
+      if (rawItems.length) {
+        rawItems[rawItems.length - 1].text = `${rawItems[rawItems.length - 1].text ?? ''} ${item.text ?? ''}`.trim();
+        if (item.tokens?.length) {
+          rawItems[rawItems.length - 1].tokens = [...(rawItems[rawItems.length - 1].tokens ?? []), ...item.tokens];
+        }
+      }
+      continue;
+    }
+    rawItems.push(item);
+  }
+  const rawSegments = rawItems.map((item, index) => {
     const start = item.offsets ? item.offsets.from / 1000 : timestamp(item.timestamps?.from);
     const end = item.offsets ? item.offsets.to / 1000 : timestamp(item.timestamps?.to);
     let cursor = start;
     const words: TranscriptWord[] = (item.tokens ?? []).filter((token) => {
-      const text = token.text?.trim() ?? '';
+      const text = toBengaliScript(token.text?.trim() ?? '');
       return text.length > 0 && !ignoredWhisperTokens.has(text);
     }).map((token, tokenIndex) => {
       const rawStart = token.offsets ? token.offsets.from / 1000 : start;
@@ -110,9 +133,10 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
       const wordStart = Math.max(cursor, Math.min(rawStart, end));
       const wordEnd = Math.max(wordStart, Math.min(rawEnd, end));
       cursor = wordEnd;
+      const text = toBengaliScript(token.text?.trim() ?? '');
       return {
         id: `word-${index + 1}-${tokenIndex + 1}`,
-        text: token.text?.trim() ?? '',
+        text,
         start: wordStart,
         end: wordEnd,
         sourceText: token.text ?? '',
@@ -127,11 +151,12 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
       id: `segment-${index + 1}`,
       start,
       end,
-      text: item.text?.trim() ?? '',
-      language: 'bn',
+      text: toBengaliScript(item.text?.trim() ?? ''),
+      language: 'bn' as const,
       words,
     };
-  });
+  }).filter((segment) => segment.text.length > 0);
+  const segments: TranscriptSegment[] = rawSegments.map((segment, index) => ({ ...segment, id: `segment-${index + 1}` }));
   const originalTranscript = segments.map((segment) => segment.text).join(' ').trim();
   const hasUsableWords = segments.some((segment) => segment.words.some((word) => word.end > word.start));
   return {

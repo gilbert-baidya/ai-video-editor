@@ -1,8 +1,26 @@
 # Personal Mac V1.3 Validation
 
-Status: **PERSONAL-MAC-VALIDATION-PENDING**
+Status: **LOCAL-VIDEO-VALIDATED · YOUTUBE-PENDING**
 
-Use a rights-cleared 2–5 minute Bengali or mixed-language sermon first. Do not begin with the 42:40 sermon.
+## Real Local-Video E2E Validation Result (2026-09-09)
+
+- **Status:** **VALIDATED** (Local-Video End-to-End Workflow)
+- **Project ID:** `project-62d0c127-4d44-4e28-adb0-04f832c3a964`
+- **Source:** 120s bounded sermon clip (`.runtime/test-sources/bounded-sermon-peter-120s.mp4`, 33,938,930 bytes, SHA-256: `2686f692f1225d4732a6fbdf76e730e92176503314833b2e3cc382cbdad82b9e`)
+- **Ingestion:** Streaming `PUT /api/projects/:id/source`, zero memory buffering, immutable source protection (HTTP 409 on overwrite attempt)
+- **Transcription:** Real `whisper-cli` with `ggml-small.bin` (26.59s wall-clock). Script-corrected to native Bengali Unicode (`0x0980..0x09FF`), 18 monotonic segments (0–95s).
+- **AI Director:** Real live Ollama `qwen3:30b` (19.56s runtime). 18/18 primary canonical segments covered (100% AI coverage), zero deterministic gap-fill, `fallbackUsed: false`, pure AI provenance.
+- **Review Workspace:** Real human decision persistence via `PUT /api/projects/:id/review` (accept, keep-pastor, approve-text, revert tested; approved Bengali text and safe speaker-led state retained).
+- **Restart / Resume:** PASS. Host stopped and restarted on port 4174; project state preserved as `READY_TO_RENDER`; upstream ingest, transcript, and director stages were not re-executed.
+- **Render:** PASS. Remotion bundled composition `BanglaFoundation` and rendered 3,600 frames (120.0s @ 30 fps, 1920x1080 H.264 / AAC 48kHz) in 216.42s wall-clock. Output size: 90,771,766 bytes (~90.77 MB).
+- **Final QA:** PASS. Automatic post-render QA passed all 7 gates (`video`, `audio`, `directorCoverage`, `brollRights`, `placement`, `bengaliGraphics`, `reviewReadiness`). Final project status: `COMPLETED`.
+- **Export:** PASS. Output verified via ffprobe and streamed over `GET /api/projects/:id/output` with byte-range support (HTTP 206 Partial Content).
+
+### BENGALI TRANSCRIPTION QUALITY NOTE
+
+The personal-Mac proof confirmed valid Bengali Unicode/script integrity after script correction, but Unicode-script validity must not be treated as proof of semantic transcription accuracy.
+Do not claim perfect transcript accuracy.
+
 
 ## Preconditions
 
