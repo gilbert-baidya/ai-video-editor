@@ -14,8 +14,8 @@
 | Canonical coverage contract and validator | IMPLEMENTED, OFFICE-VALIDATED |
 | Bounded AI coverage repair | IMPLEMENTED, OFFICE-VALIDATED WITH MOCK AI |
 | Provider status semantics correction | IMPLEMENTED, OFFICE-VALIDATED |
-| Live Ollama/Qwen execution | PERSONAL-MAC-RETEST-PENDING |
-| Full 42:40 render | PERSONAL-MAC-VALIDATION-PENDING |
+| Live Ollama/Qwen execution | VALIDATED (PERSONAL MAC) |
+| Full 42:40 render | VALIDATED (PERSONAL MAC) |
 
 No Ollama runtime, model, Python environment, Homebrew package, Docker service, or external application was installed or invoked during office validation.
 
@@ -48,7 +48,7 @@ Root cause: schema validity was conflated with canonical completeness. The provi
 
 The reported `status: NOT_CONFIGURED` was a second, separate defect: the deterministic gap-fill provenance hard-coded `NOT_CONFIGURED`, and aggregation fell through to that value even though the provider was reachable and every chunk succeeded.
 
-This is not yet a valid pure-AI run. The personal-Mac retest has not been performed.
+This finding led to the v1.2 canonical coverage contract. The personal-Mac retest completed with 128/128 primary segments covered by pure AI, zero gap-fill, and fallbackUsed: false.
 
 ## Canonical coverage contract
 
@@ -188,16 +188,17 @@ The bounded-memory benefit of the streaming source fingerprint is structurally e
 
 The standard `typecheck` and Bengali tokenization checks remain required. No live AI inference or full render is part of office validation.
 
-## Remaining personal-Mac validation
+## Personal-Mac production validation completed
 
-Only the following remain:
+All personal-Mac validation gates have passed:
 
-- Run the real Ollama adapter with `qwen3:30b`.
-- Confirm all chunks report AI source, schema PASS, canonical range PASS, and canonical coverage complete.
-- Confirm `coveragePercent: 100` and `deterministicGapFilledSegmentCount: 0`.
-- Compare the stored deterministic baseline with live AI output.
-- Run bounded previews and inspect Review Workspace provenance.
-- Run the full-sermon proof and benchmark on the personal Mac.
-- Confirm final video/audio QA and compare full-render wall time with 58.6 minutes.
+- **Live Ollama/Qwen execution**: PASSED (`ollama` / `qwen3:30b`, 6/6 chunks, 128/128 primary canonical segments, 100% coverage, 0 gap-fill, fallbackUsed: false, pure AI provenance).
+- **AI-vs-fallback comparison**: PASSED (85 AI beats vs 13 fallback beats; 16 AI visual events vs 3 fallback visual events; 69 AI no-change decisions).
+- **Bounded previews**: PASSED (`main`, `illustration`, `conclusion` preview renders; bounded frame difference QA: PASS).
+- **Full 42:40 render**: PASSED (`full-sermon-live-ai-reviewed.mp4` rendered in 3,353.46s / 55m 53.46s vs 3,516.41s baseline — 162.95s / 2.72 min saved, 4.63% speedup).
+- **Frame rate**: 30 fps (intentional, matches source sermon `public/full-sermon-pilot-source.mp4` at `r_frame_rate: 30/1` and Remotion composition `fps={30}`).
+- **QA validation**: Visual QA PASS (17 approved operations, 5 canonical frame checkpoints present), Audio QA PASS (sermon audio authoritative, B-roll audio muted, 48kHz stereo AAC, drift 0.0427s < 0.1s), Rights gate PASS, V3 placement PASS, Reverent Retention PASS, Review readiness READY FOR FINAL RENDER.
+- **Review Workspace bundling**: Resolved browser bundling defect in `scripts/prove-full-sermon-pilot-v1-1.ts` via an esbuild browser plugin providing pure SHA-256 for `foundation.ts`, preventing server-only Node builtins (`node:crypto`, `node:fs`, etc.) from leaking into the client bundle.
+- **5-minute benchmark**: PASSED (baseline 407.42s vs optimized 375.31s — 32.11s saved, 7.88% speedup, realtime factor 1.25).
 
-Exact commands and expected artifacts are in `docs/PERSONAL-MAC-V1-1-VALIDATION.md`.
+Exact reproducibility commands and artifact paths are in `docs/PERSONAL-MAC-V1-1-VALIDATION.md`.

@@ -202,3 +202,28 @@ Send back:
 - Any failed chunk ID, provider error, schema error, canonical-range error, review blocker, or QA failure
 
 Do not send source video, private B-roll, credentials, model files, or unrelated SermonClip project data.
+
+## 10. Completed production validation record
+
+Conducted on Personal Mac (Apple Silicon, 18 logical CPUs, 64 GB RAM):
+
+- **Lightweight tests**: `typecheck: PASS`, `test-tokenization: PASS`, `test-full-sermon-v1-1: PASS`, `test-director-review-workspace: PASS`
+- **Live AI Director**: Ollama 0.33.2 / `qwen3:30b`, 6/6 chunks, 128/128 primary segments, 100% coverage, zero deterministic gap-fill, fallbackUsed: false, pure AI provenance
+- **AI vs Fallback**: 85 AI beats vs 13 fallback beats, 16 AI visual events vs 3 fallback visual events, 69 AI no-change decisions
+- **Bounded Previews**: `bounded/main-director.mp4`, `illustration-director.mp4`, `conclusion-director.mp4`, `main-control.mp4`; `bounded/qa.json: PASS`
+- **Full 42:40 Render**: `artifacts/full-sermon-pilot-v1-1/full-sermon-live-ai-reviewed.mp4` (1,493,135,785 bytes, 2560.00s video / 2560.04s audio)
+  - Wall-clock render time: 3,353.46s (55m 53.46s) vs 3,516.41s baseline (162.95s / 2.72 min saved, 4.63% speedup)
+  - Realtime factor: 1.31
+  - Frame rate: 30 fps (intentional, matches source video `r_frame_rate: 30/1` and composition `fps={30}`)
+- **Final QA**:
+  - `visual-qa.json`: PASS (17 approved operations, all 5 canonical frame checkpoints present)
+  - `audio-qa.json`: PASS (authoritative sermon audio preserved, B-roll muted, 48kHz stereo AAC, drift 0.0427s < 0.1s)
+  - `review/readiness.json`: READY FOR FINAL RENDER (ready: true, 0 blockers)
+  - Rights & Placement: PASS (rights-safe media only, collision-free V3 placement)
+- **Review Workspace Bundling**: esbuild browser plugin resolves `foundation.ts` to pure TypeScript SHA-256 stub, preventing server-only Node builtins (`node:crypto`, `node:fs`, etc.) from leaking into the client UI bundle.
+- **5-Minute Performance Benchmark**:
+  - Baseline (concurrency null / 8): 407.42s
+  - Optimized (concurrency 12, preset veryfast): 375.31s
+  - Savings: 32.11s (7.88% speedup, realtime factor 1.25)
+  - Confirms positive optimization trajectory consistent with full render
+- **Gate**: GO
