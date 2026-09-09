@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DirectorReviewWorkspace, type ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
+import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
+import { AiVideoEditorWorkspace } from './AiVideoEditorWorkspace.tsx';
 import './director-review.css';
 import './director-review-overrides.css';
 import './director-review-text.css';
+import './product-workspace.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Director Review root element is missing.');
@@ -14,7 +16,7 @@ const App: React.FC = () => {
   useEffect(() => { fetch('./review-data.json').then((response) => { if (!response.ok) throw new Error(`Review artifact unavailable (${response.status}).`); return response.json() as Promise<ReviewDataPayload>; }).then(setData).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }, []);
   if (error) return <main style={{ color: '#f3c977', padding: 40, fontFamily: 'system-ui' }}><h1>Director Review unavailable</h1><p>{error}</p></main>;
   if (!data) return <main style={{ color: '#9eafb4', padding: 40, fontFamily: 'system-ui' }}>Loading Director artifacts…</main>;
-  return <DirectorReviewWorkspace data={data} />;
+  return <AiVideoEditorWorkspace data={data} />;
 };
 
 createRoot(root).render(<App />);

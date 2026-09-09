@@ -10,7 +10,7 @@ import type {
   SermonSection,
 } from './contracts.ts';
 import type { DirectorExecutionProvenance, DirectorExecutionSource } from './director-execution.ts';
-import { sha256 } from './foundation.ts';
+import { sha256Browser as sha256 } from './sha256.ts';
 
 function validateReviewPlan(plan: EditPlan, duration: number): string[] {
   const failures: string[] = [];

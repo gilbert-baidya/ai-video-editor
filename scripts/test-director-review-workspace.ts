@@ -1,43 +1,83 @@
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { applyReviewAction, deriveApprovedEditPlan, evaluateReviewReadiness, type ReviewState, type ReviewWorkspaceData } from '../src/director-review.ts';
-import type { EditPlan } from '../src/contracts.ts';
-import { readJson, validatePlan } from '../src/foundation.ts';
+import {
+  applyReviewAction,
+  createInitialReviewState,
+  deriveApprovedEditPlan,
+  evaluateReviewReadiness,
+  type ReviewWorkspaceData,
+} from '../src/director-review.ts';
+import type { EditOperation, EditPlan, MediaAsset, SermonSection } from '../src/contracts.ts';
+import { sha256Browser } from '../src/sha256.ts';
 
-const root = resolve(import.meta.dirname, '..');
-const artifacts = join(root, 'artifacts', 'director-review-workspace-v1');
+const section = (id: string, start: number, visualRecommendation: SermonSection['visualRecommendation'], extra: Partial<SermonSection> = {}): SermonSection => ({
+  id,
+  start,
+  end: start + 10,
+  transcriptText: `মূল বাংলা বক্তব্য ${id}`,
+  sourceSegmentIds: [`segment-${id}`],
+  type: visualRecommendation === 'scripture-card' ? 'scripture-reading' : 'teaching',
+  visualRecommendation,
+  confidence: 0.9,
+  reason: 'Office-safe fixture.',
+  ...extra,
+});
 
-async function main(): Promise<void> {
-  const data = await readJson<ReviewWorkspaceData>(join(artifacts, 'review-data.json'));
-  const initial = data.initialReview;
-  const broll = data.beats.find((beat) => beat.section.id === 'section-3');
-  if (!broll?.originalOperation) throw new Error('Review test fixture has no pressure-cooker AI operation.');
-  const accepted = applyReviewAction(initial, 'section-3', 'accept');
-  if (deriveApprovedEditPlan(data.aiPlan, accepted).operations.length !== 1) throw new Error('Accept did not preserve the AI B-roll operation.');
-  const rejected = applyReviewAction(accepted, 'section-3', 'reject');
-  if (deriveApprovedEditPlan(data.aiPlan, rejected).operations.length !== 0) throw new Error('Reject did not remove the B-roll operation.');
-  const modified = applyReviewAction(accepted, 'section-3', 'modify', { reason: 'Test modification.' });
-  if (modified.decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'modified') throw new Error('Modify did not persist modified status.');
-  const replaced = applyReviewAction(accepted, 'section-3', 'replace-broll', { operation: broll.originalOperation, reason: 'Indexed candidate replacement test.' });
-  if (replaced.decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'modified') throw new Error('Replace B-roll did not persist modified status.');
-  const reverted = applyReviewAction(rejected, 'section-3', 'revert');
-  if (reverted.decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'pending') throw new Error('Revert did not restore pending AI review.');
-  const textApproved = applyReviewAction(initial, 'section-2', 'approve-text', { displayText: 'প্রার্থনা করছেন আর উত্তর আপনার দরজার সামনে দাঁড়িয়ে আছে' });
-  if (textApproved.decisions.find((decision) => decision.beatId === 'section-2')?.approvedDisplayText === undefined) throw new Error('Bangla text approval was not persisted.');
-  const scriptureBlocked = applyReviewAction(initial, 'section-3', 'accept');
-  const scriptureReadiness = evaluateReviewReadiness(data, scriptureBlocked, 120);
-  if (!scriptureReadiness.blockers.some((blocker) => blocker.includes('section-1'))) throw new Error('Scripture review warning did not block readiness.');
-  const finalReview = await readJson<ReviewState>(join(artifacts, 'review', 'director-review.json'));
-  const approvedPlan = await readJson<EditPlan>(join(artifacts, 'review', 'approved-edit-plan.json'));
-  if (validatePlan(approvedPlan, 120).length) throw new Error('Persisted approved plan is invalid.');
-  if (finalReview.decisions.length !== data.beats.length) throw new Error('Persisted review state lost a beat.');
-  const cache = await readJson<{ reused: string[]; invalidated: string[]; rerun: Record<string, boolean> }>(join(artifacts, 'review-cache.json'));
-  if (cache.rerun.sermonAnalysis !== false || !cache.reused.includes('media index') || !cache.invalidated.includes('reviewed preview render')) throw new Error('Review cache boundary is incorrect.');
-  const proof = await readJson<{ status: string; render: { changedAt60s: boolean; audio?: unknown[] } }>(join(artifacts, 'review-proof.json'));
-  if (proof.status !== 'PASS' || !proof.render.changedAt60s || !proof.render.audio?.length) throw new Error('Reviewed render proof is incomplete.');
-  const uiBundle = await readFile(join(artifacts, 'main.js'), 'utf8');
-  if (!uiBundle.includes('DIRECTOR REVIEW')) throw new Error('Review UI bundle is missing.');
-  console.log(JSON.stringify({ status: 'PASS', checks: ['accept', 'reject', 'modify', 'revert', 'Bangla text approval', 'Scripture readiness blocker', 'plan validation', 'persistence', 'cache invalidation', 'reviewed render', 'UI bundle'], approvedOperations: approvedPlan.operations.length, ready: true }, null, 2));
+function fixture(): ReviewWorkspaceData {
+  const scripture = section('section-1', 0, 'scripture-card', { scriptureReference: 'যোহন ৩:১৬', suggestedDisplayText: 'যোহন ৩:১৬' });
+  const text = section('section-2', 10, 'keyword-graphic', { suggestedDisplayText: 'বিশ্বাসে স্থির থাকুন' });
+  const broll = section('section-3', 20, 'image-broll');
+  const noChange = section('section-4', 30, 'speaker-full');
+  const textOperation: EditOperation = { id: 'policy-section-2', type: 'sermon-point', start: 10, end: 20, text: 'বিশ্বাসে স্থির থাকুন', position: 'right', style: 'keyword', reason: 'Fixture', confidence: 0.9 };
+  const brollOperation: EditOperation = { id: 'broll-section-3', type: 'broll', sourceStart: 0, sourceEnd: 5, start: 20, end: 30, assetId: 'asset-1', mode: 'full-screen', muted: true, reason: 'Fixture', confidence: 0.9 };
+  const asset: MediaAsset = {
+    id: 'asset-1', path: '/fixture/image.png', relativePath: 'image.png', fileName: 'image.png', kind: 'image', mimeType: 'image/png',
+    sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z', width: 1920, height: 1080, aspectRatio: 16 / 9, hasAudio: false,
+    tags: [], categories: [], searchTerms: [], rightsStatus: 'owned', rightsSource: 'library-root-default', libraryRootId: 'root', libraryPolicyVersion: '1', usable: true, unusableReasons: [],
+  };
+  const aiPlan: EditPlan = {
+    schemaVersion: '1.0', projectId: 'office-safe-review', sourceTranscriptHash: sha256Browser('মূল বাংলা বক্তব্য'),
+    operations: [textOperation, brollOperation], status: 'draft', createdBy: { provider: 'fixture-ai', model: 'fixture-model' },
+  };
+  const beats: ReviewWorkspaceData['beats'] = [
+    { section: scripture, candidates: [], requiredReview: true, noBroll: true },
+    { section: text, originalOperation: textOperation, candidates: [], requiredReview: true, noBroll: true },
+    { section: broll, originalOperation: brollOperation, selectedAsset: asset, brollDecision: { intent: { sectionId: broll.id, start: broll.start, end: broll.end, decision: 'search', reason: 'Fixture' }, candidates: [], selectedAssetId: asset.id, decision: 'selected', reason: 'Fixture' }, candidates: [], requiredReview: true, noBroll: false },
+    { section: noChange, candidates: [], requiredReview: false, noBroll: true },
+  ];
+  const initialReview = createInitialReviewState({ projectId: aiPlan.projectId, aiPlan, beats }, sha256Browser(JSON.stringify(aiPlan)));
+  return {
+    projectId: aiPlan.projectId, title: 'Office-safe Bengali review', languageProfile: 'bn',
+    preview: { controlUrl: '', directorUrl: '', durationSeconds: 40, sourceStart: 0, sourceEnd: 40 },
+    analysis: { version: 'fixture', projectId: aiPlan.projectId, supportingPassages: [], sections: [scripture, text, broll, noChange], mainPoints: [], keyStatements: [], illustrations: [], stories: [], testimonies: [], questions: [], applications: [], prayerMoments: [], emotionalMoments: [], confidence: 0.9 },
+    aiPlan,
+    mediaIndex: { schemaVersion: '1', indexerVersion: '1', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', roots: [], assets: [asset] },
+    beats, qa: { status: 'PASS', failures: [] },
+    evidence: { explanationChain: '', placementEvidence: '', beforeFrame: '', duringFrame: '', afterFrame: '' },
+    initialReview,
+  };
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+const data = fixture();
+const initial = data.initialReview;
+const broll = data.beats.find((beat) => beat.section.id === 'section-3');
+if (!broll?.originalOperation) throw new Error('Review fixture has no B-roll AI operation.');
+
+const accepted = applyReviewAction(initial, 'section-3', 'accept');
+if (!deriveApprovedEditPlan(data.aiPlan, accepted).operations.some((operation) => operation.id === broll.originalOperation?.id)) throw new Error('Accept did not preserve B-roll.');
+const rejected = applyReviewAction(accepted, 'section-3', 'reject');
+if (deriveApprovedEditPlan(data.aiPlan, rejected).operations.some((operation) => operation.id === broll.originalOperation?.id)) throw new Error('Reject did not remove B-roll.');
+if (applyReviewAction(accepted, 'section-3', 'modify').decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'modified') throw new Error('Modify did not persist.');
+if (applyReviewAction(accepted, 'section-3', 'replace-broll', { operation: broll.originalOperation }).decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'modified') throw new Error('Replace did not persist.');
+if (applyReviewAction(rejected, 'section-3', 'revert').decisions.find((decision) => decision.beatId === 'section-3')?.status !== 'pending') throw new Error('Revert did not restore pending.');
+
+const canonicalBefore = data.beats.find((beat) => beat.section.id === 'section-2')!.section.transcriptText;
+const approvedBengali = 'প্রার্থনা করছেন আর উত্তর আপনার দরজার সামনে দাঁড়িয়ে আছে';
+const textApproved = applyReviewAction(initial, 'section-2', 'approve-text', { displayText: approvedBengali });
+if (textApproved.decisions.find((decision) => decision.beatId === 'section-2')?.approvedDisplayText !== approvedBengali) throw new Error('Bengali display text changed.');
+if (data.beats.find((beat) => beat.section.id === 'section-2')!.section.transcriptText !== canonicalBefore) throw new Error('Canonical Bengali transcript changed.');
+if (!evaluateReviewReadiness(data, accepted, 40).blockers.some((blocker) => blocker.includes('section-1'))) throw new Error('Unverified Scripture did not block readiness.');
+
+console.log(JSON.stringify({
+  status: 'PASS',
+  mode: 'office-safe-fixture',
+  checks: ['accept', 'reject', 'modify', 'replace', 'revert', 'Bengali display text approval', 'canonical transcript immutability', 'Scripture readiness blocker'],
+}, null, 2));

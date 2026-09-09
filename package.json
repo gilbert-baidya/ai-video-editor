@@ -23,6 +23,7 @@
     "test-full-sermon-v1-1": "tsx scripts/test-full-sermon-v1-1.ts",
     "prove-full-sermon-pilot-v1-1": "tsx scripts/prove-full-sermon-pilot-v1-1.ts",
     "test-director-review-workspace": "tsx scripts/test-director-review-workspace.ts",
+    "test-product-workflow-v1-2": "tsx scripts/test-product-workflow-v1-2.ts",
     "prove-sol-foundation-fixes": "tsx scripts/prove-sol-foundation-fixes.ts",
     "test-tokenization": "tsx scripts/test-tokenization.ts",
     "typecheck": "tsc --noEmit"

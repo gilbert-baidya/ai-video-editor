@@ -14,11 +14,12 @@ import type {
   TranscriptWord,
 } from './contracts.ts';
 import { measureTranscriptIntegrity } from './transcript-integrity.ts';
+import { sha256Node } from './sha256-node.ts';
 
 const exec = promisify(execFile);
 const ignoredWhisperTokens = new Set(['[_BEG_]', '[_END_]', '[_TT_150]', '[_TT_250]']);
 
-export const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
+export const sha256 = sha256Node;
 
 export async function fileVersionFingerprint(path: string): Promise<string> {
   const hash = createHash('sha256');
