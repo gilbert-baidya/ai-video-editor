@@ -28,3 +28,5 @@ models/
 cache/
 tmp/
 temp/
+.runtime/
+public/.product-runtime/

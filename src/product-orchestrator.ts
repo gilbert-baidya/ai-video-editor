@@ -1,0 +1,373 @@
+import { randomUUID } from 'node:crypto';
+import { access, readFile, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { basename, resolve } from 'node:path';
+import type { EditPlan, TranscriptDocument } from './contracts.ts';
+import { OllamaDirectorProvider } from './director.ts';
+import { runFullSermonDirector } from './full-sermon-director.ts';
+import { extractAudio, transcribeAndAlign } from './foundation.ts';
+import type {
+  CreateProjectRequest,
+  ProductCapabilities,
+  ProductJob,
+  ProductProjectRecord,
+  SourceMetadata,
+} from './product-api.ts';
+import { discoverCapabilities } from './product-capabilities.ts';
+import { ProductProjectStore } from './product-store.ts';
+import { canRenderProject, createProductProject, finalQaPassed, updateProductStage, type FinalQaSummary, type ProductStage } from './product-workflow.ts';
+import { fingerprintExistingSource, parseYouTubeUrl, probeSource } from './source-ingestion.ts';
+import { applyRetentionPolicy } from './visual-policy.ts';
+import { canonicalTranscriptHash } from './sermon-chunking.ts';
+import { createInitialReviewState, type ReviewWorkspaceData } from './director-review.ts';
+import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
+
+export interface ProductStageAdapters {
+  capabilities?: () => Promise<ProductCapabilities>;
+  transcribe?: (sourcePath: string, projectId: string, artifactDirectory: string) => Promise<TranscriptDocument>;
+  analyze?: (transcript: TranscriptDocument, cacheRoot: string) => Promise<{
+    analysis: unknown;
+    reviewWorkspace?: ReviewDataPayload;
+    provenance: ProductProjectRecord['workflow']['provider'];
+    coveragePercent: number;
+    cacheReused: boolean;
+  }>;
+  render?: (record: ProductProjectRecord, sourcePath: string, outputPath: string) => Promise<FinalQaSummary>;
+}
+
+function safeTitle(value: string): string {
+  const title = value.normalize('NFC').trim();
+  if (!title || title.length > 160) throw new Error('Project title must be between 1 and 160 characters.');
+  return title;
+}
+
+function createJob(projectId: string, stage: ProductStage): ProductJob {
+  const now = new Date().toISOString();
+  return {
+    jobId: `job-${stage}-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    projectId,
+    stage,
+    status: 'queued',
+    progress: 0,
+    startedAt: now,
+    updatedAt: now,
+    cancelRequested: false,
+  };
+}
+
+async function command(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((done, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', reject);
+    child.once('close', (code) => code === 0 ? done() : reject(new Error(stderr || `${command} exited with ${code}.`)));
+  });
+}
+
+async function downloadYouTube(url: string, outputDirectory: string, capabilities: ProductCapabilities): Promise<SourceMetadata> {
+  if (capabilities.youtube.state !== 'AVAILABLE') throw new Error(capabilities.youtube.detail);
+  const parsed = parseYouTubeUrl(url);
+  const executable = capabilities.youtube.detail.split(' is available.')[0];
+  const outputTemplate = resolve(outputDirectory, `${parsed.videoId}.%(ext)s`);
+  await command(executable, ['--no-playlist', '--restrict-filenames', '--merge-output-format', 'mp4', '-o', outputTemplate, parsed.canonicalUrl]);
+  const candidates = ['mp4', 'mkv', 'webm'].map((extension) => resolve(outputDirectory, `${parsed.videoId}.${extension}`));
+  const sourcePath = (await Promise.all(candidates.map(async (path) => await access(path).then(() => path, () => undefined)))).find(Boolean);
+  if (!sourcePath) throw new Error('YouTube downloader completed without producing a media file.');
+  const info = await stat(sourcePath);
+  return {
+    kind: 'youtube-url',
+    fileName: basename(sourcePath),
+    canonicalUrl: parsed.canonicalUrl,
+    youtubeVideoId: parsed.videoId,
+    sizeBytes: info.size,
+    sha256: await fingerprintExistingSource(sourcePath),
+    relativePath: `source/${basename(sourcePath)}`,
+    immutable: true,
+  };
+}
+
+export class ProductOrchestrator {
+  private readonly running = new Map<string, Promise<void>>();
+  private readonly directorProvider = new OllamaDirectorProvider();
+
+  constructor(
+    readonly store: ProductProjectStore,
+    readonly appRoot: string,
+    private readonly adapters: ProductStageAdapters = {},
+  ) {}
+
+  async initialize(): Promise<void> {
+    await this.store.initialize();
+    await this.store.recoverInterruptedJobs();
+  }
+
+  capabilities(): Promise<ProductCapabilities> {
+    return this.adapters.capabilities?.() ?? discoverCapabilities({ root: this.appRoot, directorProvider: this.directorProvider });
+  }
+
+  async createProject(request: CreateProjectRequest): Promise<ProductProjectRecord> {
+    const title = safeTitle(request.title);
+    if (request.source.type === 'youtube-url') parseYouTubeUrl(request.source.url);
+    const projectId = `project-${randomUUID()}`;
+    const workflow = createProductProject({ projectId, title, source: request.source });
+    return this.store.create({ schemaVersion: '1.3', workflow, artifacts: {}, jobs: [], cacheReuse: {} });
+  }
+
+  async attachUploadedSource(projectId: string, metadata: SourceMetadata): Promise<ProductProjectRecord> {
+    const record = await this.store.get(projectId);
+    if (record.sourceMetadata) throw new Error('Project source is immutable and has already been stored.');
+    const capabilities = await this.capabilities();
+    const sourcePath = resolve(this.store.projectDirectory(projectId), metadata.relativePath!);
+    const probed = await probeSource(sourcePath, capabilities.ffprobe);
+    const workflow = updateProductStage(record.workflow, 'ingest', { status: 'completed', progress: 100 });
+    return this.store.save({ ...record, workflow, sourceMetadata: { ...metadata, ...probed, immutable: true } });
+  }
+
+  async startStage(projectId: string, stage: ProductStage): Promise<ProductJob> {
+    if (this.running.has(`${projectId}:${stage}`)) throw new Error(`${stage} is already running.`);
+    const record = await this.store.get(projectId);
+    this.assertStageReady(record, stage);
+    const job = createJob(projectId, stage);
+    await this.store.addJob(projectId, job);
+    const execution = this.executeStage(projectId, job);
+    this.running.set(`${projectId}:${stage}`, execution);
+    void execution.finally(() => this.running.delete(`${projectId}:${stage}`));
+    return job;
+  }
+
+  async waitForStage(projectId: string, stage: ProductStage): Promise<void> {
+    await this.running.get(`${projectId}:${stage}`);
+  }
+
+  private assertStageReady(record: ProductProjectRecord, stage: ProductStage): void {
+    if (stage === 'ingest') {
+      if (record.workflow.source.type === 'local-video' && !record.sourceMetadata) throw new Error('Upload the local source before ingesting.');
+      return;
+    }
+    const prerequisite: Partial<Record<ProductStage, ProductStage>> = {
+      transcript: 'ingest',
+      director: 'transcript',
+      review: 'director',
+      render: 'review',
+      qa: 'render',
+    };
+    const required = prerequisite[stage];
+    if (required && record.workflow.stages[required].status !== 'completed') throw new Error(`${required} must complete before ${stage}.`);
+    if (stage === 'render' && !canRenderProject(record.workflow)) throw new Error('Render gates are not satisfied.');
+  }
+
+  private async executeStage(projectId: string, job: ProductJob): Promise<void> {
+    let record = await this.store.get(projectId);
+    const stage = job.stage;
+    try {
+      record = await this.store.updateJob(projectId, job.jobId, { status: 'running', progress: 1, message: `Starting ${stage}.` });
+      record = await this.store.save({ ...record, workflow: updateProductStage(record.workflow, stage, { status: 'running', progress: 1, error: undefined }) });
+      if (stage === 'ingest') record = await this.ingest(record);
+      else if (stage === 'transcript') record = await this.transcribe(record);
+      else if (stage === 'director') record = await this.analyze(record);
+      else if (stage === 'review') throw new Error('Review is completed through persisted human decisions, not an automated job.');
+      else if (stage === 'render') {
+        record = await this.render(record);
+        record = await this.qa(record);
+      }
+      else record = await this.qa(record);
+      await this.store.updateJob(projectId, job.jobId, { status: 'completed', progress: 100, completedAt: new Date().toISOString(), message: `${stage} completed.` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const latest = await this.store.get(projectId);
+      await this.store.save({ ...latest, workflow: updateProductStage(latest.workflow, stage, { status: 'failed', error: message }) });
+      await this.store.updateJob(projectId, job.jobId, { status: 'failed', error: message, completedAt: new Date().toISOString() });
+    }
+  }
+
+  private async ingest(record: ProductProjectRecord): Promise<ProductProjectRecord> {
+    if (record.workflow.source.type === 'youtube-url') {
+      if (record.sourceMetadata) return this.complete(record, 'ingest', true);
+      const metadata = await downloadYouTube(record.workflow.source.url, this.store.sourceDirectory(record.workflow.projectId), await this.capabilities());
+      const sourcePath = resolve(this.store.projectDirectory(record.workflow.projectId), metadata.relativePath!);
+      const probed = await probeSource(sourcePath, (await this.capabilities()).ffprobe);
+      return this.store.save({ ...this.completedRecord(record, 'ingest', false), sourceMetadata: { ...metadata, ...probed } });
+    }
+    if (!record.sourceMetadata) throw new Error('Local source upload has not completed.');
+    return this.complete(record, 'ingest', true);
+  }
+
+  private async transcribe(record: ProductProjectRecord): Promise<ProductProjectRecord> {
+    if (record.artifacts.transcript && await access(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.transcript)).then(() => true, () => false)) {
+      return this.complete(record, 'transcript', true);
+    }
+    const capabilities = await this.capabilities();
+    if (capabilities.transcription.state !== 'AVAILABLE') throw new Error(capabilities.transcription.detail);
+    const sourcePath = this.sourcePath(record);
+    const artifacts = this.store.artifactDirectory(record.workflow.projectId);
+    const transcript = this.adapters.transcribe
+      ? await this.adapters.transcribe(sourcePath, record.workflow.projectId, artifacts)
+      : await this.defaultTranscribe(sourcePath, record.workflow.projectId, artifacts);
+    if (transcript.projectId !== record.workflow.projectId) transcript.projectId = record.workflow.projectId;
+    const path = resolve(artifacts, 'transcript.json');
+    await writeFile(path, `${JSON.stringify(transcript, null, 2)}\n`, 'utf8');
+    return this.store.save({ ...this.completedRecord(record, 'transcript', false), artifacts: { ...record.artifacts, transcript: 'artifacts/transcript.json' } });
+  }
+
+  private async defaultTranscribe(sourcePath: string, projectId: string, artifacts: string): Promise<TranscriptDocument> {
+    const audioPath = resolve(artifacts, 'source-16khz.wav');
+    await extractAudio(sourcePath, audioPath);
+    const transcript = await transcribeAndAlign(audioPath, resolve(artifacts, 'transcript-raw'), process.env.WHISPER_MODEL!);
+    return { ...transcript, projectId };
+  }
+
+  private async analyze(record: ProductProjectRecord): Promise<ProductProjectRecord> {
+    if (!record.artifacts.transcript) throw new Error('Canonical transcript artifact is missing.');
+    const transcript = JSON.parse(await readFile(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.transcript), 'utf8')) as TranscriptDocument;
+    const result = this.adapters.analyze
+      ? await this.adapters.analyze(transcript, this.store.cacheDirectory(record.workflow.projectId))
+      : await this.defaultAnalyze(transcript, this.store.cacheDirectory(record.workflow.projectId));
+    const path = resolve(this.store.artifactDirectory(record.workflow.projectId), 'director.json');
+    await writeFile(path, `${JSON.stringify(result.analysis, null, 2)}\n`, 'utf8');
+    if (result.reviewWorkspace) {
+      await writeFile(resolve(this.store.artifactDirectory(record.workflow.projectId), 'review-workspace.json'), `${JSON.stringify(result.reviewWorkspace, null, 2)}\n`, 'utf8');
+    }
+    const completed = this.completedRecord(record, 'director', result.cacheReused);
+    return this.store.save({
+      ...completed,
+      workflow: { ...completed.workflow, provider: result.provenance, coveragePercent: result.coveragePercent },
+      artifacts: { ...record.artifacts, director: 'artifacts/director.json' },
+    });
+  }
+
+  private async defaultAnalyze(transcript: TranscriptDocument, cacheRoot: string) {
+    const result = await runFullSermonDirector(transcript, { provider: this.directorProvider, cacheRoot });
+    const analysis = result.reconciliation.analysis;
+    const duration = transcript.segments.at(-1)?.end ?? 0;
+    const policy = applyRetentionPolicy(analysis, transcript.projectId, canonicalTranscriptHash(transcript), duration);
+    const mediaIndex = { schemaVersion: '1.0', indexerVersion: 'product-v1.3', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), roots: [], assets: [] };
+    const beats: ReviewWorkspaceData['beats'] = analysis.sections.map((section) => {
+      const originalOperation = policy.editPlan.operations.find((operation) => operation.id === `policy-${section.sourceSegmentIds[0]}-${section.sourceSegmentIds.at(-1)}`);
+      return {
+        section,
+        originalOperation,
+        candidates: [],
+        requiredReview: Boolean(originalOperation) || section.visualRecommendation === 'scripture-card',
+        noBroll: !originalOperation,
+        provenance: result.provenance,
+      };
+    });
+    const initialReview = createInitialReviewState({
+      projectId: transcript.projectId,
+      aiPlan: policy.editPlan,
+      beats,
+      directorExecution: result.provenance,
+    }, canonicalTranscriptHash({ ...transcript, originalTranscript: JSON.stringify(policy.editPlan) }));
+    // createInitialReviewState expects the exact Edit Plan hash used by review compatibility.
+    const { sha256Browser } = await import('./sha256.ts');
+    initialReview.sourceEditPlanHash = sha256Browser(JSON.stringify(policy.editPlan));
+    const reviewWorkspace: ReviewDataPayload = {
+      projectId: transcript.projectId,
+      title: analysis.title ?? 'Untitled sermon',
+      languageProfile: transcript.language === 'en' ? 'en' : transcript.language === 'bn' ? 'bn' : 'mixed',
+      preview: {
+        controlUrl: `/api/projects/${transcript.projectId}/source`,
+        directorUrl: `/api/projects/${transcript.projectId}/source`,
+        durationSeconds: duration,
+        sourceStart: 0,
+        sourceEnd: duration,
+      },
+      analysis,
+      directorExecution: result.provenance,
+      aiPlan: policy.editPlan,
+      mediaIndex,
+      beats,
+      qa: { status: 'PASS', failures: [] },
+      evidence: { explanationChain: '#', placementEvidence: '#', beforeFrame: '', duringFrame: '', afterFrame: '' },
+      initialReview,
+      assetPreviewUrls: {},
+    };
+    return {
+      analysis: result,
+      reviewWorkspace,
+      provenance: {
+        name: result.provenance.provider,
+        model: result.provenance.model,
+        status: result.provenance.providerStatus,
+        fallbackUsed: result.provenance.fallbackUsed,
+      },
+      coveragePercent: result.coverage.coveragePercent,
+      cacheReused: result.chunkExecutions.every((item) => item.cache.hit),
+    };
+  }
+
+  async saveReview(projectId: string, review: ProductProjectRecord['review'], approvedPlan: EditPlan, ready: boolean, blockers: string[]): Promise<ProductProjectRecord> {
+    if (!review) throw new Error('Review state is required.');
+    const record = await this.store.get(projectId);
+    if (record.workflow.stages.director.status !== 'completed') throw new Error('Director must complete before review can be saved.');
+    if (review.projectId !== projectId || approvedPlan.projectId !== projectId) throw new Error('Review artifacts do not belong to this project.');
+    if (ready && (approvedPlan.status !== 'approved' || blockers.length > 0)) throw new Error('A blocked or unapproved review cannot be marked ready.');
+    const artifacts = this.store.artifactDirectory(projectId);
+    await Promise.all([
+      writeFile(resolve(artifacts, 'review.json'), `${JSON.stringify(review, null, 2)}\n`, 'utf8'),
+      writeFile(resolve(artifacts, 'approved-plan.json'), `${JSON.stringify(approvedPlan, null, 2)}\n`, 'utf8'),
+    ]);
+    const workflow = updateProductStage({ ...record.workflow, unresolvedBlockers: blockers }, 'review', ready
+      ? { status: 'completed', progress: 100 }
+      : { status: 'running', progress: Math.max(1, record.workflow.stages.review.progress) });
+    return this.store.save({
+      ...record,
+      workflow,
+      review,
+      artifacts: { ...record.artifacts, review: 'artifacts/review.json', approvedPlan: 'artifacts/approved-plan.json' },
+    });
+  }
+
+  private async render(record: ProductProjectRecord): Promise<ProductProjectRecord> {
+    if (!record.artifacts.approvedPlan) throw new Error('Approved edit plan artifact is missing.');
+    const capabilities = await this.capabilities();
+    if (capabilities.render.state !== 'AVAILABLE') throw new Error(capabilities.render.detail);
+    if (!this.adapters.render) throw new Error('Remotion product renderer is not configured for this host.');
+    const outputPath = resolve(this.store.outputDirectory(record.workflow.projectId), 'final-sermon.mp4');
+    const qa = await this.adapters.render(record, this.sourcePath(record), outputPath);
+    const completed = this.completedRecord(record, 'render', false);
+    return this.store.save({ ...completed, qa, artifacts: { ...record.artifacts, render: 'output/final-sermon.mp4' } });
+  }
+
+  private async qa(record: ProductProjectRecord): Promise<ProductProjectRecord> {
+    if (!record.qa || !record.artifacts.render) throw new Error('Rendered output and QA evidence are required.');
+    const outputPath = resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.render);
+    const info = await stat(outputPath);
+    const metadata = record.sourceMetadata;
+    const passed = finalQaPassed(record.qa);
+    const workflow = updateProductStage(record.workflow, 'qa', passed
+      ? { status: 'completed', progress: 100 }
+      : { status: 'failed', error: 'One or more required final QA gates failed.' });
+    return this.store.save({
+      ...record,
+      workflow,
+      output: {
+        fileName: basename(outputPath),
+        relativePath: record.artifacts.render,
+        durationSeconds: metadata?.durationSeconds ?? 0,
+        width: metadata?.width ?? record.workflow.render.width,
+        height: metadata?.height ?? record.workflow.render.height,
+        sizeBytes: info.size,
+        qaStatus: passed ? 'PASS' : 'FAIL',
+      },
+    });
+  }
+
+  private sourcePath(record: ProductProjectRecord): string {
+    if (!record.sourceMetadata?.relativePath) throw new Error('Immutable source artifact is missing.');
+    return resolve(this.store.projectDirectory(record.workflow.projectId), record.sourceMetadata.relativePath);
+  }
+
+  private completedRecord(record: ProductProjectRecord, stage: ProductStage, cacheReused: boolean): ProductProjectRecord {
+    return {
+      ...record,
+      workflow: updateProductStage(record.workflow, stage, { status: 'completed', progress: 100, cacheReused }),
+      cacheReuse: { ...record.cacheReuse, [stage]: cacheReused },
+    };
+  }
+
+  private async complete(record: ProductProjectRecord, stage: ProductStage, cacheReused: boolean): Promise<ProductProjectRecord> {
+    return this.store.save(this.completedRecord(record, stage, cacheReused));
+  }
+}
