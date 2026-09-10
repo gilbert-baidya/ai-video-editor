@@ -153,13 +153,16 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
     if (!sectionTypes.has(sectionType)) throw new Error(`Unsupported section type: ${sectionType}`);
     if (!intensities.has(intensity)) throw new Error(`Unsupported intensity: ${intensity}`);
     if (!visualRecommendations.has(visualRecommendation)) throw new Error(`Unsupported visual recommendation: ${visualRecommendation}`);
-    const startSegment = numberValue(item.startSegment, `sections[${index}].startSegment`);
-    const endSegment = numberValue(item.endSegment, `sections[${index}].endSegment`);
+    const startSegmentRaw = item.startSegment ?? item.startIndex;
+    if (startSegmentRaw === undefined) throw new Error(`Missing startSegment or startIndex at sections[${index}]`);
+    const startSegment = numberValue(startSegmentRaw, `sections[${index}].startSegment`);
+    const endSegmentRaw = item.endSegment ?? item.endIndex;
+    if (endSegmentRaw === undefined) throw new Error(`Missing endSegment or endIndex at sections[${index}]`);
+    const endSegment = numberValue(endSegmentRaw, `sections[${index}].endSegment`);
     const confidence = item.confidence ? numberValue(item.confidence, `sections[${index}].confidence`) : 1.0;
     const semanticConfidence = item.semanticConfidence ? numberValue(item.semanticConfidence, `sections[${index}].semanticConfidence`) : confidence;
     if (!Number.isInteger(startSegment) || !Number.isInteger(endSegment) || startSegment < 0 || endSegment < startSegment) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
-    if (startSegment >= segmentCount) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
-    const validEndSegment = Math.min(endSegment, segmentCount - 1);
+    if (startSegment >= segmentCount || endSegment >= segmentCount) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
     if (confidence < 0 || confidence > 1) throw new Error(`Invalid confidence at sections[${index}].confidence`);
     return {
       sectionType,
@@ -167,7 +170,7 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
       semanticConfidence,
       semanticEvidence: item.semanticEvidence ? stringValue(item.semanticEvidence, `sections[${index}].semanticEvidence`) : '',
       startSegment,
-      endSegment: validEndSegment,
+      endSegment,
       intensity,
       visualRecommendation,
       suggestedDisplayText: optionalStringValue(item.suggestedDisplayText, `sections[${index}].suggestedDisplayText`),
@@ -305,7 +308,7 @@ export function promptFor(input: DirectorInput): string {
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
     'Allowed editorialIntent: PRESERVE_SPEAKER, EMPHASIZE_SPEAKER, SHOW_KEY_TEXT, SHOW_SCRIPTURE, USE_CONTEXTUAL_VISUAL, VISUAL_RESET.',
     'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
-    'JSON shape: {"sections":[{"sectionType":"main-point","startSegment":0,"endSegment":0,"intensity":"emphasis","editorialIntent":"SHOW_KEY_TEXT","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    'JSON shape: {"sections":[{"sectionType":"main-point","startIndex":0,"endIndex":0,"intensity":"emphasis","editorialIntent":"SHOW_KEY_TEXT","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     'Do not omit required fields.',
     ...coverageRules,
     `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
@@ -320,7 +323,7 @@ export function coverageRepairPromptFor(input: DirectorInput, missingIndices: nu
     'Return sections ONLY for the uncovered primary segment indices listed below. Do not repeat already covered segments.',
     'Every listed index must appear in exactly one returned section.',
     'If a segment needs no visual intervention, return it with visualRecommendation "speaker-full" or "none" and intent "PRESERVE_SPEAKER".',
-    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","editorialIntent":"PRESERVE_SPEAKER","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    'JSON shape: {"sections":[{"sectionType":"teaching","startIndex":0,"endIndex":0,"intensity":"normal-teaching","editorialIntent":"PRESERVE_SPEAKER","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     `Uncovered primary segment indices: ${missingIndices.join(', ')}.`,
     `Numbered transcript segments (full context):\n${numberedSegments(input)}`,
   ].join('\n');
@@ -353,7 +356,7 @@ export function editorialEnrichmentPromptFor(request: DirectorEditorialEnrichmen
     'No Change remains valid, but explain why it is better than the eligible restrained alternatives.',
     `Editorial opportunities:\n${JSON.stringify(eligible)}`,
     `Numbered transcript segments:\n${numberedSegments(request.input)}`,
-    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","suggestedDisplayText":"optional concise canonical phrase","visualRecommendation":"caption","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    'JSON shape: {"sections":[{"sectionType":"teaching","startIndex":0,"endIndex":0,"intensity":"normal-teaching","suggestedDisplayText":"optional concise canonical phrase","visualRecommendation":"caption","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
   ].join('\n');
 }
 
@@ -658,7 +661,7 @@ export function semanticAnalysisPromptFor(input: DirectorInput): string {
     'If a section serves multiple purposes (e.g. a story that teaches a point), provide both a sectionType (primary) and a secondaryType.',
     'Provide semanticEvidence referencing the transcript structure. Do not expose chain-of-thought.',
     'Allowed sectionType and secondaryType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
-    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startSegment":0,"endSegment":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative of Paul in Rome"}],"overallConfidence":0.0}.',
+    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startIndex":0,"endIndex":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative of Paul in Rome"}],"overallConfidence":0.0}.',
     'Do not omit required fields.',
     ...coverageRules,
     `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
@@ -667,10 +670,28 @@ export function semanticAnalysisPromptFor(input: DirectorInput): string {
 }
 
 export function visualDecisionPromptFor(input: DirectorInput, semantics: SermonAnalysis): string {
+  const templateSections = semantics.sections.map(s => {
+    const startIndex = input.segments.findIndex(seg => seg.id === s.sourceSegmentIds[0]);
+    const endIndex = input.segments.findIndex(seg => seg.id === s.sourceSegmentIds[s.sourceSegmentIds.length - 1]);
+    return {
+      sectionType: s.type,
+      startIndex,
+      endIndex,
+      intensity: "story-illustration",
+      editorialIntent: "USE_CONTEXTUAL_VISUAL",
+      suggestedDisplayText: "optional Bengali label",
+      scriptureReference: "optional",
+      visualRecommendation: "image-broll",
+      confidence: 0.9,
+      reason: "Your rationale here"
+    };
+  });
   return [
     'You are a reverent Bengali sermon visual director.',
     'Return only one JSON object matching the provided semantic sections exactly.',
-    'Do NOT change startSegment, endSegment, sectionType, or secondaryType.',
+    'CRITICAL: You MUST output exactly the same number of sections as provided, and you MUST copy the exact startIndex and endIndex for each section from the input below.',
+    'Do NOT change startIndex, endIndex, sectionType, or secondaryType.',
+    'CRITICAL INSTRUCTION: startIndex and endIndex are integer array indices. Do NOT output timestamps.',
     'For each section, determine the visualRecommendation and intensity.',
     'Respect that prayer, Scripture, altar call, and emotional ministry often need speaker-full or none.',
     'Reverent Retention does not mean visual inactivity. For ordinary teaching, stories, questions, and emphasis, consider restrained captions, sermon points, punch-ins, reframes, Scripture treatments, contextual B-roll, or an intentional visual reset when semantically useful.',
@@ -681,9 +702,9 @@ export function visualDecisionPromptFor(input: DirectorInput, semantics: SermonA
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
     'Allowed editorialIntent: PRESERVE_SPEAKER, EMPHASIZE_SPEAKER, SHOW_KEY_TEXT, SHOW_SCRIPTURE, USE_CONTEXTUAL_VISUAL, VISUAL_RESET.',
     'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
-    'JSON shape: {"sections":[{"sectionType":"story","startSegment":0,"endSegment":0,"intensity":"story-illustration","editorialIntent":"USE_CONTEXTUAL_VISUAL","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"image-broll","confidence":0.9,"reason":"Visualizes Paul in Rome"}],"overallConfidence":0.0}.',
+    `JSON shape must exactly match this structure with your decisions:\n{"sections":${JSON.stringify(templateSections)},"overallConfidence":0.9}`,
     `Numbered transcript segments:\n${numberedSegments(input)}`,
-    `Stable Semantic Classification to apply visual decisions to:\n${JSON.stringify(semantics.sections.map(s => ({ sectionType: s.type, secondaryType: s.secondaryType, startSegment: s.start, endSegment: s.end, semanticEvidence: s.semanticEvidence })), null, 2)}`
+    `Stable Semantic Classification to apply visual decisions to:\n${JSON.stringify(templateSections.map(t => ({ sectionType: t.sectionType, startIndex: t.startIndex, endIndex: t.endIndex })), null, 2)}`
   ].join('\n');
 }
 
@@ -693,8 +714,8 @@ export function semanticReconciliationPromptFor(input: DirectorInput, sections: 
     'Return only one JSON object updating the semantic classification of the provided sections.',
     'Some sections were flagged as AMBIGUOUS because they contain strong narrative evidence (e.g. telling a story, recounting events) but were classified only as teaching or main-point.',
     'Review the transcript and if a section is genuinely narrative, update its sectionType or secondaryType to story, illustration, or testimony.',
-    'Do NOT change startSegment or endSegment boundaries. Only reconsider the semantic classification.',
-    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startSegment":0,"endSegment":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative"}],"overallConfidence":0.0}.',
+    'Do NOT change startIndex or endIndex boundaries. Only reconsider the semantic classification.',
+    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startIndex":0,"endIndex":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative"}],"overallConfidence":0.0}.',
     `Numbered transcript segments:\n${numberedSegments(input)}`,
     `Sections requiring reconciliation:\n${JSON.stringify(sections, null, 2)}`
   ].join('\n');

@@ -1,3 +1,6 @@
+import type { DirectorProvider } from "./director.ts";
+import { GeminiDirectorProvider } from "./director-gemini.ts";
+
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -27,7 +30,7 @@ async function executable(candidates: string[], versionArgs = ['-version']): Pro
 
 export interface CapabilityOptions {
   root: string;
-  directorProvider?: OllamaDirectorProvider;
+  directorProvider?: DirectorProvider;
   binaryCandidates?: Partial<Record<'ffmpeg' | 'ffprobe' | 'whisper' | 'youtube', string[]>>;
 }
 
@@ -36,8 +39,14 @@ export async function discoverCapabilities(options: CapabilityOptions): Promise<
   const ffprobe = await executable(options.binaryCandidates?.ffprobe ?? ['/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe']);
   const whisper = await executable(options.binaryCandidates?.whisper ?? ['/opt/homebrew/bin/whisper-cli', '/usr/local/bin/whisper-cli', 'whisper-cli'], ['--help']);
   const youtube = await executable(options.binaryCandidates?.youtube ?? ['/opt/homebrew/bin/yt-dlp', '/usr/local/bin/yt-dlp', 'yt-dlp'], ['--version']);
-  const provider = options.directorProvider ?? new OllamaDirectorProvider();
-  const directorAvailability = await provider.checkAvailability();
+  const provider = options.directorProvider ?? new GeminiDirectorProvider();
+  
+  const geminiProvider = new GeminiDirectorProvider();
+  const geminiAvailability = await geminiProvider.checkAvailability();
+  
+  const ollamaProvider = new OllamaDirectorProvider();
+  const ollamaAvailability = await ollamaProvider.checkAvailability();
+  const directorAvailability = await provider.checkAvailability?.() ?? { available: true, checkedAt: new Date().toISOString() };
   const model = process.env.WHISPER_MODEL ? resolve(options.root, process.env.WHISPER_MODEL) : undefined;
   const modelAvailable = model ? await access(model).then(() => true, () => false) : false;
   const transcription: ProductCapability = whisper.state === 'AVAILABLE' && ffmpeg.state === 'AVAILABLE' && modelAvailable
@@ -48,9 +57,14 @@ export async function discoverCapabilities(options: CapabilityOptions): Promise<
     node: { state: 'AVAILABLE', detail: 'The local product host is running.', version: process.version },
     ffmpeg,
     ffprobe,
-    director: directorAvailability.available
-      ? { state: 'AVAILABLE', detail: `${provider.name}/${provider.model} is available.` }
-      : { state: 'UNAVAILABLE', detail: directorAvailability.reason ?? 'Director provider is unavailable.' },
+    director: {
+      state: directorAvailability.available ? 'AVAILABLE' : 'UNAVAILABLE',
+      detail: directorAvailability.available ? `${provider.name}/${provider.model} is available.` : (directorAvailability.reason ?? 'Director provider is unavailable.'),
+      provider: provider.name,
+      model: provider.model,
+      geminiAvailable: geminiAvailability.available,
+      ollamaAvailable: ollamaAvailability.available,
+    },
     transcription,
     youtube: youtube.state === 'AVAILABLE' ? youtube : { ...youtube, detail: 'YouTube ingestion is unavailable because yt-dlp is not installed. No download will be simulated.' },
     render: ffmpeg.state === 'AVAILABLE'

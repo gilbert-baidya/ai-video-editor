@@ -9,12 +9,19 @@ export interface ProductCapability {
   version?: string;
 }
 
+export interface DirectorCapability extends ProductCapability {
+  provider: string;
+  model: string;
+  geminiAvailable: boolean;
+  ollamaAvailable: boolean;
+}
+
 export interface ProductCapabilities {
   checkedAt: string;
   node: ProductCapability;
   ffmpeg: ProductCapability;
   ffprobe: ProductCapability;
-  director: ProductCapability;
+  director: DirectorCapability;
   transcription: ProductCapability;
   youtube: ProductCapability;
   render: ProductCapability;

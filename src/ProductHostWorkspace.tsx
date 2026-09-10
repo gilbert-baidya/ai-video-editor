@@ -114,6 +114,17 @@ export const ProductHostWorkspace: React.FC = () => {
     {view === 'projects' && <section className="product-screen">
       <div className="screen-heading"><span>PROJECTS</span><h1>Sermon editing projects</h1><p>Project metadata, jobs, artifacts, review, and QA are persisted by the local product host.</p></div>
       <div className="capability-grid">{capabilities && Object.entries(capabilities).filter(([name]) => name !== 'checkedAt').map(([name, item]) => {
+        if (name === 'director') {
+          const dirCap = item as ProductCapabilities['director'];
+          return (
+            <div key={name}>
+              <small>AI DIRECTOR</small>
+              <b className={capabilityTone(dirCap.state)}>{dirCap.provider === 'gemini' ? 'Gemini 3.1 Pro' : 'Ollama Qwen'}</b>
+              <span>Status: {dirCap.state === 'AVAILABLE' ? 'Connected' : 'Unavailable'}</span>
+              <span>Fallback: {dirCap.ollamaAvailable ? 'Local Qwen available' : 'Unavailable'}</span>
+            </div>
+          );
+        }
         const capability = item as ProductCapabilities['node'];
         return <div key={name}><small>{name.toUpperCase()}</small><b className={capabilityTone(capability.state)}>{capability.state}</b><span>{capability.detail}</span></div>;
       })}</div>
