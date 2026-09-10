@@ -1,0 +1,120 @@
+import { resolve } from 'path';
+
+let PROJECT_ID = '';
+
+async function pollStage(stage: string) {
+  while (true) {
+    const res = await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/status`);
+    const data = await res.json();
+    const status = data.project?.workflow?.stages?.[stage];
+    if (status?.status === 'completed') return data.project;
+    if (status?.status === 'failed') throw new Error(`Stage ${stage} failed`);
+    console.log(`Waiting for ${stage}... (status=${status?.status})`);
+    await new Promise(r => setTimeout(r, 5000));
+  }
+}
+
+async function main() {
+  console.log('Creating project...');
+  const createRes = await fetch(`http://localhost:4174/api/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'B-roll Test',
+      source: { type: 'youtube-url', url: 'https://youtube.com/shorts/lPN9AWaTuEc' }
+    })
+  });
+  const createData = await createRes.json();
+  PROJECT_ID = createData.project.workflow.projectId;
+  console.log('Project ID:', PROJECT_ID);
+
+  console.log('Starting ingest...');
+  await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/ingest`, { method: 'POST' });
+  await pollStage('ingest');
+
+  console.log('Starting transcribe...');
+  await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/transcribe`, { method: 'POST' });
+  await pollStage('transcript');
+
+  console.log('Starting director...');
+  await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/director`, { method: 'POST' });
+  await pollStage('director');
+
+  console.log('Importing asset...');
+  const assetRes = await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path: resolve(process.cwd(), 'scratch/peter_prison.jpg'),
+      description: 'Peter escaping prison',
+      rightsConfirmed: true
+    })
+  });
+  if (!assetRes.ok) throw new Error("Failed to import asset: " + await assetRes.text());
+  const asset = await assetRes.json();
+  console.log('Imported asset:', asset.id);
+
+  console.log('Fetching review state...');
+  const workspaceRes = await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/review-workspace`);
+  const workspaceData = await workspaceRes.json();
+  const review = workspaceData.initialReview;
+
+  let hasBroll = false;
+  for (const dec of review.decisions) {
+    if (dec.originalOperation?.type === 'director-placeholder' && dec.originalOperation.visualType === 'image-broll') {
+      dec.status = 'modified';
+      dec.resolution = 'manual-broll-replacement';
+      dec.reviewedAt = new Date().toISOString();
+      dec.reviewerReason = 'Human reviewed and selected imported B-roll.';
+      dec.reviewedOperation = {
+        id: `broll-${dec.beatId}`,
+        type: 'broll',
+        sourceStart: dec.originalOperation.start,
+        sourceEnd: dec.originalOperation.end,
+        start: dec.originalOperation.start,
+        end: dec.originalOperation.end,
+        assetId: asset.id,
+        mode: 'full-screen',
+        muted: true,
+        reason: 'Selected local asset.',
+        confidence: 1.0,
+      };
+      hasBroll = true;
+    } else {
+      dec.status = 'accepted';
+      dec.resolution = 'accepted';
+      dec.reviewedAt = new Date().toISOString();
+      dec.reviewerReason = 'Human reviewed and accepted.';
+      dec.reviewedOperation = { ...dec.originalOperation };
+      // Ensure end doesn't exceed duration
+      if (dec.reviewedOperation.end > 60.0) dec.reviewedOperation.end = 60.014;
+    }
+  }
+
+  if (!hasBroll) throw new Error("No B-roll recommendation found!");
+
+  console.log('Submitting review...');
+  const reviewRes = await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/review`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ review })
+  });
+  if (!reviewRes.ok) throw new Error("Failed to save review: " + await reviewRes.text());
+
+  console.log('Starting render...');
+  await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/render`, { method: 'POST' });
+  await pollStage('render');
+
+  console.log('Starting qa...');
+  await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/qa`, { method: 'POST' });
+  await pollStage('qa');
+
+  console.log('Fetching final status...');
+  const finalRes = await fetch(`http://localhost:4174/api/projects/${PROJECT_ID}/status`);
+  const finalData = await finalRes.json();
+  console.log(JSON.stringify(finalData.project.qa, null, 2));
+  
+  console.log('Project:', PROJECT_ID);
+  console.log('Done!');
+}
+main().catch(console.error);

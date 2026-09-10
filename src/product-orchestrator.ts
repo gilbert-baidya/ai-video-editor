@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { access, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, readFile, stat, writeFile, mkdir, copyFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { basename, resolve } from 'node:path';
 import type { EditPlan, TranscriptDocument } from './contracts.ts';
@@ -19,7 +20,9 @@ import { canRenderProject, createProductProject, finalQaPassed, updateProductSta
 import { fingerprintExistingSource, parseYouTubeUrl, probeSource } from './source-ingestion.ts';
 import { applyRetentionPolicy } from './visual-policy.ts';
 import { canonicalTranscriptHash } from './sermon-chunking.ts';
+import { createHash } from 'crypto';
 import { createInitialReviewState, isReviewStateCompatible, updateReview, type ReviewWorkspaceData } from './director-review.ts';
+import type { MediaAsset } from './contracts.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
 import { buildBrollIntents, decideBroll } from './broll-selection.ts';
 import { sha256Browser } from './sha256.ts';
@@ -341,6 +344,48 @@ export class ProductOrchestrator {
       coveragePercent: result.coverage.coveragePercent,
       cacheReused: result.chunkExecutions.every((item) => item.cache.hit) && result.editorialEnrichmentCache.hit,
     };
+  }
+
+  async importLocalAsset(projectId: string, input: { path: string, description: string, rightsConfirmed: boolean }): Promise<MediaAsset> {
+    const artifacts = this.store.artifactDirectory(projectId);
+    const workspacePath = resolve(artifacts, 'review-workspace.json');
+    const workspace = JSON.parse(await readFile(workspacePath, 'utf8')) as ReviewWorkspaceData;
+    
+    const statResult = await stat(input.path);
+    const extension = input.path.split('.').pop()?.toLowerCase();
+    const assetId = `media-${createHash('sha256').update(input.path).digest('hex').slice(0, 24)}`;
+    const destName = `${assetId}.${extension}`;
+    const destPath = resolve(this.store.projectDirectory(projectId), 'source', destName);
+    await mkdir(dirname(destPath), { recursive: true });
+    await copyFile(input.path, destPath);
+    
+    const asset: MediaAsset = {
+      id: assetId,
+      path: destPath,
+      relativePath: `source/${destName}`,
+      fileName: destName,
+      kind: 'image',
+      mimeType: `image/${extension === 'png' ? 'png' : 'jpeg'}`,
+      sizeBytes: statResult.size,
+      modifiedAt: statResult.mtime.toISOString(),
+      width: 1080,
+      height: 1920,
+      aspectRatio: 1080/1920,
+      hasAudio: false,
+      tags: [],
+      categories: [],
+      searchTerms: [input.description],
+      rightsStatus: input.rightsConfirmed ? 'approved' : 'unknown',
+      rightsSource: 'library-root-default',
+      libraryRootId: 'local-import',
+      libraryPolicyVersion: '1.0',
+      usable: true,
+      unusableReasons: [],
+    };
+    
+    workspace.mediaIndex.assets.push(asset);
+    await writeFile(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`, 'utf8');
+    return asset;
   }
 
   async saveReview(projectId: string, review: ProductProjectRecord['review']): Promise<ProductProjectRecord> {

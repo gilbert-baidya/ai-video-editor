@@ -113,6 +113,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const stage: 'ingest' | 'transcript' | 'director' | 'render' | 'qa' =
       action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
     sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
+  } else if (request.method === 'POST' && action === 'assets') {
+    const input = await bodyJson<{ path: string, description: string, rightsConfirmed: boolean }>(request);
+    sendJson(response, 200, await orchestrator.importLocalAsset(projectId, input));
   } else if (request.method === 'PUT' && action === 'review') {
     const input = await bodyJson<{ review: ReviewState }>(request);
     sendJson(response, 200, { project: await orchestrator.saveReview(projectId, input.review) });
