@@ -43,7 +43,7 @@ if (!recovered || recovered.status !== 'READY_TO_RENDER' || !recovered.stages.tr
 const fallbackProject = { ...project, provider: { ...project.provider, fallbackUsed: true } };
 if (canRenderProject(fallbackProject) || !renderBlockers(fallbackProject).some((blocker) => blocker.includes('fallback'))) throw new Error('Fallback provenance did not block final rendering.');
 
-const qa: FinalQaSummary = { video: true, audio: true, directorCoverage: true, brollRights: true, placement: true, bengaliGraphics: true, reviewReadiness: true, outputPath: '/exports/sermon.mp4' };
+const qa: FinalQaSummary = { video: true, audio: true, directorCoverage: true, brollRights: true, placement: true, bengaliGraphics: true, reviewReadiness: true, editorialQuality: true, outputPath: '/exports/sermon.mp4' };
 if (!finalQaPassed(qa) || finalQaPassed({ ...qa, bengaliGraphics: false })) throw new Error('Final QA aggregation is incorrect.');
 
 let failedWithoutError = false;

@@ -4,7 +4,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, resolve } from 'node:path';
 import { build } from 'esbuild';
 import type { CreateProjectRequest, ProductApiError } from './product-api.ts';
-import type { EditPlan } from './contracts.ts';
 import type { ReviewState } from './director-review.ts';
 import { ProductOrchestrator } from './product-orchestrator.ts';
 import { createRemotionRenderAdapter } from './product-renderer.ts';
@@ -115,9 +114,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
     sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
   } else if (request.method === 'PUT' && action === 'review') {
-    const input = await bodyJson<{ review: ReviewState; approvedPlan: EditPlan; ready: boolean; blockers: string[] }>(request);
-    if (!Array.isArray(input.blockers) || typeof input.ready !== 'boolean') throw new Error('Review readiness and blockers are required.');
-    sendJson(response, 200, { project: await orchestrator.saveReview(projectId, input.review, input.approvedPlan, input.ready, input.blockers) });
+    const input = await bodyJson<{ review: ReviewState }>(request);
+    sendJson(response, 200, { project: await orchestrator.saveReview(projectId, input.review) });
   } else sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', error: 'Method not allowed for this project route.' });
   return true;
 }

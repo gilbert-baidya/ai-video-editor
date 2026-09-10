@@ -133,6 +133,7 @@ export const AiVideoEditorWorkspace: React.FC<AiVideoEditorWorkspaceProps> = ({ 
     ['PLACEMENT', project.qa.placement],
     ['BENGALI GRAPHICS', project.qa.bengaliGraphics],
     ['REVIEW READINESS', project.qa.reviewReadiness],
+    ['EDITORIAL QUALITY', project.qa.editorialQuality],
   ] as const : [];
 
   function onReviewStateChange(_: unknown, ready: boolean): void {

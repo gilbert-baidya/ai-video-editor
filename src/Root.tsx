@@ -2,6 +2,7 @@ import React from 'react';
 import { AbsoluteFill, Img, Video, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { EditPlan, GraphicRegion, MediaAsset, SpeakerPosition } from './contracts.ts';
 import { resolvedOperationFontSize } from './render-presentation.ts';
+import { defaultVideoFormatProfile, type VideoFormatProfile } from './video-format.ts';
 
 export interface FoundationProps extends Record<string, unknown> {
   sourcePath: string;
@@ -9,13 +10,14 @@ export interface FoundationProps extends Record<string, unknown> {
   graphicFontSize: number;
   durationSeconds?: number;
   mediaAssets?: MediaAsset[];
+  videoFormat?: VideoFormatProfile;
 }
 
 function positionStyle(position: SpeakerPosition | 'center'): React.CSSProperties {
   if (position === 'left') return { transform: 'translateX(-7%) scale(1.08)' };
   if (position === 'right') return { transform: 'translateX(7%) scale(1.08)' };
   if (position === 'punch-in') return { transform: 'scale(1.12)' };
-  return { transform: 'scale(1.06)' };
+  return {};
 }
 
 function regionStyle(region: GraphicRegion | undefined): React.CSSProperties {
@@ -38,7 +40,7 @@ function mediaSource(asset: MediaAsset): string {
   return asset.path.startsWith('public/') ? staticFile(asset.path.slice('public/'.length)) : asset.path;
 }
 
-export const FoundationComposition: React.FC<FoundationProps> = ({ sourcePath, editPlan, graphicFontSize, mediaAssets = [] }) => {
+export const FoundationComposition: React.FC<FoundationProps> = ({ sourcePath, editPlan, graphicFontSize, mediaAssets = [], videoFormat = defaultVideoFormatProfile() }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const seconds = frame / fps;
@@ -55,7 +57,7 @@ export const FoundationComposition: React.FC<FoundationProps> = ({ sourcePath, e
   const brollAsset = broll?.type === 'broll' ? mediaAssets.find((asset) => asset.id === broll.assetId) : undefined;
   return (
     <AbsoluteFill style={{ backgroundColor: '#101820', fontFamily: 'Noto Sans Bengali, sans-serif' }}>
-      <Video src={staticFile(sourcePath)} style={{ width: '100%', height: '100%', objectFit: 'cover', ...positionStyle(speakerPosition) }} />
+      <Video src={staticFile(sourcePath)} style={{ width: '100%', height: '100%', objectFit: videoFormat.fitMode, ...positionStyle(speakerPosition) }} />
       {broll?.type === 'broll' && brollAsset && broll.mode === 'full-screen' && brollAsset.kind === 'video' && <Video src={mediaSource(brollAsset)} volume={0} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
       {broll?.type === 'broll' && brollAsset && broll.mode === 'full-screen' && brollAsset.kind === 'image' && <Img src={mediaSource(brollAsset)} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
       {broll?.type === 'broll' && brollAsset && broll.mode !== 'full-screen' && <div style={{ position: 'absolute', top: 0, bottom: 0, width: '50%', overflow: 'hidden', ...(broll.mode === 'split-left' ? { left: 0 } : { right: 0 }) }}>{brollAsset.kind === 'video' ? <Video src={mediaSource(brollAsset)} volume={0} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Img src={mediaSource(brollAsset)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>}

@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import type { EditOperation } from './contracts.ts';
 import { applyReviewAction, isReviewStateCompatible, updateReview, type ReviewAction, type ReviewBeat, type ReviewState, type ReviewWorkspaceData } from './director-review.ts';
+import { summarizeReviewWorkspace } from './editorial-quality.ts';
 
 export interface ReviewDataPayload extends ReviewWorkspaceData {
   assetPreviewUrls: Record<string, string>;
@@ -45,7 +46,8 @@ function CandidateInspector({ beat, data }: { beat: ReviewBeat; data: ReviewData
 
 function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { beat: ReviewBeat; data: ReviewDataPayload; decision: ReviewState['decisions'][number]; selected: boolean; onSelect: () => void; onAction: (action: ReviewAction, options?: { operation?: EditOperation; displayText?: string; reason?: string }) => void }): React.ReactElement {
   const section = beat.section;
-  const isBroll = beat.brollDecision?.decision === 'selected';
+  const isBroll = section.visualRecommendation === 'image-broll' || section.visualRecommendation === 'video-broll';
+  const unresolvedBroll = isBroll && beat.brollDecision?.decision !== 'selected';
   const approvedText = decision.approvedDisplayText;
   const [editingText, setEditingText] = useState(false);
   const [draftText, setDraftText] = useState(approvedText ?? section.suggestedDisplayText ?? '');
@@ -56,18 +58,38 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
     <p className="transcript-snippet">{bn(section.transcriptText.slice(0, 180))}{section.transcriptText.length > 180 ? '…' : ''}</p>
     <div className="card-grid"><Metric label="Director recommendation" value={section.visualRecommendation ?? 'speaker-full'} /><Metric label="Provenance" value={decision.provenance ?? data.directorExecution?.source ?? 'UNKNOWN'} tone={decision.provenance === 'human-override' ? 'gold' : undefined} /><Metric label="Confidence" value={`${Math.round(section.confidence * 100)}%`} /></div>
     {isBroll && beat.selectedAsset && <div className="asset-summary"><div className="asset-thumb">{data.assetPreviewUrls[beat.selectedAsset.id] && <img src={data.assetPreviewUrls[beat.selectedAsset.id]} alt={beat.selectedAsset.fileName} />}</div><div><small>FINAL AI-RESOLVED VISUAL · {beat.selectedAsset.rightsStatus.toUpperCase()}</small><strong>{beat.selectedAsset.fileName}</strong><span>{beat.brollDecision?.candidates.find((candidate) => candidate.assetId === beat.selectedAsset?.id)?.score.toFixed(3)} score · {beat.placement?.decision === 'place' ? beat.placement.selectedRegion : 'review'} placement</span></div></div>}
+    {unresolvedBroll && <div className="unresolved-broll"><small>UNRESOLVED B-ROLL</small><strong>No rights-safe approved asset is attached.</strong><span>Replace the asset, reject B-roll, or explicitly Keep Pastor before rendering.</span></div>}
     {section.visualRecommendation === 'scripture-card' && <div className="scripture-state"><small>SCRIPTURE INTEGRITY</small><span>Detected reference <b>{section.scriptureReference ?? 'Needs review'}</b></span><span>Verification <b>NEEDS REVIEW</b></span><span>Approved text <b>{approvedText ? 'APPROVED' : 'REFERENCE ONLY'}</b></span></div>}
     {section.suggestedDisplayText && <div className="text-state"><small>DISPLAY TEXT · {section.visualRecommendation === 'scripture-card' ? 'SCRIPTURE REFERENCE NEEDS REVIEW' : approvedText ? 'APPROVED DISPLAY' : 'AI-SUGGESTED-UNAPPROVED'}</small>{editingText ? <><textarea aria-label="Bangla display text" value={draftText} onChange={(event) => setDraftText(event.target.value)} /><button className="text-save" onClick={() => { setEditingText(false); onAction('approve-text', { displayText: draftText, reason: 'Bangla display text edited and explicitly approved during review.' }); }}>Save text</button></> : <div>{bn(approvedText ?? section.suggestedDisplayText)}</div>}</div>}
     <div className="reason"><small>WHY</small><span>{beat.brollDecision?.reason ?? section.reason}</span></div>
     <div className="actions" onClick={(event) => event.stopPropagation()}>
       {decision.status === 'pending' && <button className="primary" onClick={() => onAction('accept')}>Accept</button>}
-      {isBroll && <><button onClick={() => setReplaceMode(true)}>Replace B-roll</button><button onClick={() => onAction('keep-pastor')}>Keep Pastor</button></>}
+      {isBroll && <><button disabled={beat.candidates.every((candidate) => !candidate.eligible)} onClick={() => setReplaceMode(true)}>Replace B-roll</button><button onClick={() => onAction('keep-pastor')}>Keep Pastor — Static</button><button onClick={() => onAction('reject', { reason: 'Reviewer rejected the B-roll recommendation without creating a Keep Pastor decision.' })}>Reject B-roll</button></>}
       {section.suggestedDisplayText && section.visualRecommendation !== 'scripture-card' && <><button onClick={() => onAction('approve-text', { displayText: section.transcriptText.slice(0, 120), reason: 'Approved from canonical sermon wording.' })}>Approve text</button><button onClick={() => { setDraftText(approvedText ?? section.suggestedDisplayText ?? ''); setEditingText(true); }}>Edit text</button></>}
       {section.visualRecommendation === 'scripture-card' && <button onClick={() => onAction('keep-pastor')}>Remove graphic</button>}
       {decision.status !== 'pending' && <button className="quiet" onClick={() => onAction('revert')}>Revert to AI</button>}
       <button className="quiet" onClick={() => onAction('accept')}>Preview</button>
     </div>
-    {replaceMode && isBroll && <div className="replace-picker"><small>REPLACE FROM INDEXED, RIGHTS-SAFE MEDIA</small>{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).map((candidate) => <button key={candidate.assetId} onClick={() => { setReplaceMode(false); const original = beat.originalOperation; onAction('replace-broll', { operation: original?.type === 'broll' ? { ...original, assetId: candidate.assetId } : original, reason: `Selected ${candidate.asset?.fileName} from the indexed eligible candidate list.` }); }}>Use {candidate.asset?.fileName}</button>)}{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).length === 0 && <span>No eligible local replacement is available.</span>}</div>}
+    {replaceMode && isBroll && <div className="replace-picker"><small>REPLACE FROM INDEXED, RIGHTS-SAFE MEDIA</small>{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).map((candidate) => <button key={candidate.assetId} onClick={() => {
+      setReplaceMode(false);
+      const original = beat.originalOperation;
+      const operation: EditOperation = original?.type === 'broll'
+        ? { ...original, assetId: candidate.assetId }
+        : {
+          id: `broll-${section.id}`,
+          type: 'broll',
+          sourceStart: 0,
+          sourceEnd: Math.min(candidate.asset?.durationSeconds ?? section.end - section.start, section.end - section.start),
+          start: section.start,
+          end: section.end,
+          assetId: candidate.assetId,
+          mode: 'full-screen',
+          muted: true,
+          reason: `Human selected ${candidate.asset?.fileName} for the Director B-roll recommendation.`,
+          confidence: section.confidence,
+        };
+      onAction('replace-broll', { operation, reason: `Selected ${candidate.asset?.fileName} from the indexed eligible candidate list.` });
+    }}>Use {candidate.asset?.fileName}</button>)}{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).length === 0 && <span>No eligible local replacement is available.</span>}</div>}
     <CandidateInspector beat={beat} data={data} />
   </article>;
 }
@@ -109,6 +131,7 @@ export const DirectorReviewWorkspace: React.FC<{
     return status === filter.toLowerCase();
   });
   const execution = data.directorExecution;
+  const editorial = useMemo(() => summarizeReviewWorkspace(data, review), [data, review]);
 
   function selectBeat(beat: ReviewBeat): void {
     setSelectedId(beat.section.id);
@@ -121,7 +144,18 @@ export const DirectorReviewWorkspace: React.FC<{
   }
 
   return <div className="review-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">✦</span><div><strong>DIRECTOR REVIEW</strong><small>{execution?.source === 'ai' ? 'AI-assisted sermon editing' : 'Deterministic fallback review'}</small></div></div><div className="project-title"><span className="live-dot" />{data.title}<span className="language">বাংলা · 16:9</span></div><div className="top-actions"><span className={`readiness ${resolved.readiness.ready ? 'ready' : 'blocked'}`}>{resolved.readiness.label}</span><span className="save-state">Saved locally</span></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">✦</span><div><strong>DIRECTOR REVIEW</strong><small>{execution?.source === 'ai' ? 'AI-assisted sermon editing' : 'Deterministic fallback review'}</small></div></div><div className="project-title"><span className="live-dot" />{data.title}<span className="language">বাংলা · SOURCE FORMAT</span></div><div className="top-actions"><span className={`readiness ${resolved.readiness.ready ? 'ready' : 'blocked'}`}>{resolved.readiness.label}</span><span className="save-state">Saved to project host</span></div></header>
+    <section className="editorial-summary">
+      <Metric label="AI coverage" value={`${editorial.canonicalCoveragePercent.toFixed(1)}%`} />
+      <Metric label="Meaningful edits" value={String(editorial.meaningfulEditCount)} tone={editorial.meaningfulEditCount ? 'green' : 'gold'} />
+      <Metric label="Keep Pastor" value={`${editorial.keepPastorDuration.toFixed(0)}s`} />
+      <Metric label="No Change" value={`${editorial.noChangeDuration.toFixed(0)}s`} />
+      <Metric label="Graphics" value={String(editorial.graphics)} />
+      <Metric label="B-roll" value={String(editorial.broll)} />
+      <Metric label="Scripture" value={String(editorial.scripture)} />
+      <Metric label="Reframes" value={String(editorial.reframes)} />
+      <Metric label="Captions" value={String(editorial.captions)} />
+    </section>
     <main className="workspace">
       <section className="preview-column"><div className="preview-toolbar"><SectionTitle eyebrow="01 · PREVIEW">Director preview</SectionTitle><div className="preview-tabs"><button className={!showControl ? 'active' : ''} onClick={() => setShowControl(false)}>AI Director</button><button className={showControl ? 'active' : ''} onClick={() => setShowControl(true)}>Control</button></div></div><div className="video-frame"><video ref={playerRef} controls src={showControl ? data.preview.controlUrl : data.preview.directorUrl} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} /><div className="preview-badge">{showControl ? 'CONTROL' : 'AI DIRECTOR'} · {time(previewTime)}</div></div><div className="preview-meta"><span>Preview window <b>{time(data.preview.sourceStart)}—{time(data.preview.sourceEnd)}</b> source seconds</span><span>Audio <b>sermon authoritative · AAC</b></span></div><div className="proof-strip"><figure><img src={data.evidence.beforeFrame} alt="Before B-roll frame" /><figcaption>BEFORE · {time(19)}</figcaption></figure><figure className="active-proof"><img src={data.evidence.duringFrame} alt="During B-roll frame" /><figcaption>DURING B-ROLL · pressure cooker visible</figcaption></figure><figure><img src={data.evidence.afterFrame} alt="After B-roll frame" /><figcaption>AFTER · {time(101)}</figcaption></figure></div></section>
       <aside className="inspector"><div className="inspector-head"><SectionTitle eyebrow="02 · INSPECTOR">Director decision</SectionTitle><span className="beat-count">{selectedBeat.section.id}</span></div><div className="card-grid"><Metric label="Provider" value={execution?.provider ?? data.aiPlan.createdBy.provider} /><Metric label="Model" value={execution?.model ?? data.aiPlan.createdBy.model} /><Metric label="Fallback" value={execution?.fallbackUsed ? execution.fallbackReason ?? 'USED' : 'NO'} tone={execution?.fallbackUsed ? 'gold' : 'green'} /></div>{selectedBeat && <DecisionCard beat={selectedBeat} data={data} decision={selectedDecision} selected onSelect={() => undefined} onAction={act} />}<details className="explanation"><summary>Why did the Director do this?</summary><div className="chain"><span>Semantic beat</span><b>→</b><span>Reverent Retention</span><b>→</b><span>Local ranking</span><b>→</b><span>V3 placement</span></div><p>{selectedBeat.brollDecision?.reason ?? selectedBeat.section.reason}</p>{selectedBeat.placement && <p><b>V3:</b> {selectedBeat.placement.reason}</p>}<a href={data.evidence.explanationChain}>Open developer evidence</a></details></aside>

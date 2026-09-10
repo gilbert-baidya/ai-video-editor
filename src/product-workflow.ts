@@ -1,4 +1,6 @@
 import type { DirectorExecutionProvenance } from './director-execution.ts';
+import { defaultVideoFormatProfile, type VideoFormatProfile } from './video-format.ts';
+import type { EditorialQualityResult } from './editorial-quality.ts';
 
 export type ProductProjectStatus =
   | 'NEW'
@@ -35,6 +37,7 @@ export interface RenderConfiguration {
   fps: number;
   codec: 'H.264';
   audio: '48kHz stereo AAC';
+  format: VideoFormatProfile;
 }
 
 export interface FinalQaSummary {
@@ -45,6 +48,8 @@ export interface FinalQaSummary {
   placement: boolean;
   bengaliGraphics: boolean;
   reviewReadiness: boolean;
+  editorialQuality: boolean;
+  editorial?: EditorialQualityResult;
   outputPath?: string;
 }
 
@@ -98,7 +103,7 @@ export function createProductProject(input: {
     provider: input.provider ?? { name: 'Not configured', status: 'NOT_CONFIGURED', fallbackUsed: false },
     coveragePercent: 0,
     unresolvedBlockers: [],
-    render: { width: 1920, height: 1080, fps: 30, codec: 'H.264', audio: '48kHz stereo AAC' },
+    render: { width: 1920, height: 1080, fps: 30, codec: 'H.264', audio: '48kHz stereo AAC', format: defaultVideoFormatProfile() },
     createdAt: now,
     updatedAt: now,
   };
@@ -157,10 +162,13 @@ export function recoverProductProject(value: unknown): ProductProjectState | und
   const project = value as Partial<ProductProjectState>;
   if (project.schemaVersion !== '1.2' || typeof project.projectId !== 'string' || !project.stages) return undefined;
   if (!productStages.every((stage) => project.stages?.[stage])) return undefined;
-  return project as ProductProjectState;
+  const render = project.render;
+  if (!render) return undefined;
+  const format = render.format ?? defaultVideoFormatProfile();
+  return { ...project, render: { ...render, format } } as ProductProjectState;
 }
 
 export function finalQaPassed(qa: FinalQaSummary): boolean {
   return qa.video && qa.audio && qa.directorCoverage && qa.brollRights
-    && qa.placement && qa.bengaliGraphics && qa.reviewReadiness;
+    && qa.placement && qa.bengaliGraphics && qa.reviewReadiness && qa.editorialQuality;
 }

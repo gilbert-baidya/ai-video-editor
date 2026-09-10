@@ -19,8 +19,12 @@ import { canRenderProject, createProductProject, finalQaPassed, updateProductSta
 import { fingerprintExistingSource, parseYouTubeUrl, probeSource } from './source-ingestion.ts';
 import { applyRetentionPolicy } from './visual-policy.ts';
 import { canonicalTranscriptHash } from './sermon-chunking.ts';
-import { createInitialReviewState, type ReviewWorkspaceData } from './director-review.ts';
+import { createInitialReviewState, isReviewStateCompatible, updateReview, type ReviewWorkspaceData } from './director-review.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
+import { buildBrollIntents, decideBroll } from './broll-selection.ts';
+import { sha256Browser } from './sha256.ts';
+import { assertFunctionalReviewIsolation, auditPlanRealization, traceCreativeOperations } from './editorial-quality.ts';
+import { createVideoFormatProfile } from './video-format.ts';
 
 export interface ProductStageAdapters {
   capabilities?: () => Promise<ProductCapabilities>;
@@ -120,8 +124,16 @@ export class ProductOrchestrator {
     const capabilities = await this.capabilities();
     const sourcePath = resolve(this.store.projectDirectory(projectId), metadata.relativePath!);
     const probed = await probeSource(sourcePath, capabilities.ffprobe);
-    const workflow = updateProductStage(record.workflow, 'ingest', { status: 'completed', progress: 100 });
-    return this.store.save({ ...record, workflow, sourceMetadata: { ...metadata, ...probed, immutable: true } });
+    const resolvedMetadata = { ...metadata, ...probed };
+    const format = resolvedMetadata.width && resolvedMetadata.height ? createVideoFormatProfile(resolvedMetadata.width, resolvedMetadata.height) : undefined;
+    const formattedWorkflow = {
+      ...record.workflow,
+      render: format ? { ...record.workflow.render, width: format.width, height: format.height, format } : record.workflow.render,
+    };
+    const workflow = updateProductStage(formattedWorkflow, 'ingest', format
+      ? { status: 'completed', progress: 100 }
+      : { status: 'blocked', progress: 100, error: 'Source orientation is unknown because effective display dimensions could not be determined.' });
+    return this.store.save({ ...record, workflow, sourceMetadata: { ...resolvedMetadata, immutable: true } });
   }
 
   async startStage(projectId: string, stage: ProductStage): Promise<ProductJob> {
@@ -187,9 +199,20 @@ export class ProductOrchestrator {
       const metadata = await downloadYouTube(record.workflow.source.url, this.store.sourceDirectory(record.workflow.projectId), await this.capabilities());
       const sourcePath = resolve(this.store.projectDirectory(record.workflow.projectId), metadata.relativePath!);
       const probed = await probeSource(sourcePath, (await this.capabilities()).ffprobe);
-      return this.store.save({ ...this.completedRecord(record, 'ingest', false), sourceMetadata: { ...metadata, ...probed } });
+      const resolvedMetadata = { ...metadata, ...probed };
+      const format = resolvedMetadata.width && resolvedMetadata.height ? createVideoFormatProfile(resolvedMetadata.width, resolvedMetadata.height) : undefined;
+      if (!format) {
+        await this.store.save({ ...record, sourceMetadata: resolvedMetadata });
+        throw new Error('Source orientation is unknown because ffprobe did not provide effective display dimensions.');
+      }
+      const formatted = {
+        ...record,
+        workflow: { ...record.workflow, render: { ...record.workflow.render, width: format.width, height: format.height, format } },
+      };
+      return this.store.save({ ...this.completedRecord(formatted, 'ingest', false), sourceMetadata: resolvedMetadata });
     }
     if (!record.sourceMetadata) throw new Error('Local source upload has not completed.');
+    if (!record.sourceMetadata.width || !record.sourceMetadata.height) throw new Error('Source orientation must be known before ingest can complete.');
     return this.complete(record, 'ingest', true);
   }
 
@@ -242,14 +265,17 @@ export class ProductOrchestrator {
     const duration = transcript.segments.at(-1)?.end ?? 0;
     const policy = applyRetentionPolicy(analysis, transcript.projectId, canonicalTranscriptHash(transcript), duration);
     const mediaIndex = { schemaVersion: '1.0', indexerVersion: 'product-v1.3', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), roots: [], assets: [] };
+    const brollDecisions = buildBrollIntents(analysis).map((intent) => decideBroll(mediaIndex, intent));
     const beats: ReviewWorkspaceData['beats'] = analysis.sections.map((section) => {
-      const originalOperation = policy.editPlan.operations.find((operation) => operation.id === `policy-${section.sourceSegmentIds[0]}-${section.sourceSegmentIds.at(-1)}`);
+      const originalOperation = policy.editPlan.operations.find((operation) => operation.id === `policy-${section.id}`);
+      const brollDecision = brollDecisions.find((decision) => decision.intent.sectionId === section.id);
       return {
         section,
         originalOperation,
+        brollDecision,
         candidates: [],
-        requiredReview: Boolean(originalOperation) || section.visualRecommendation === 'scripture-card',
-        noBroll: !originalOperation,
+        requiredReview: originalOperation?.type !== 'no-change',
+        noBroll: brollDecision?.decision === 'no-broll' || originalOperation?.type === 'no-change',
         provenance: result.provenance,
       };
     });
@@ -258,10 +284,7 @@ export class ProductOrchestrator {
       aiPlan: policy.editPlan,
       beats,
       directorExecution: result.provenance,
-    }, canonicalTranscriptHash({ ...transcript, originalTranscript: JSON.stringify(policy.editPlan) }));
-    // createInitialReviewState expects the exact Edit Plan hash used by review compatibility.
-    const { sha256Browser } = await import('./sha256.ts');
-    initialReview.sourceEditPlanHash = sha256Browser(JSON.stringify(policy.editPlan));
+    }, sha256Browser(JSON.stringify(policy.editPlan)));
     const reviewWorkspace: ReviewDataPayload = {
       projectId: transcript.projectId,
       title: analysis.title ?? 'Untitled sermon',
@@ -281,6 +304,7 @@ export class ProductOrchestrator {
       qa: { status: 'PASS', failures: [] },
       evidence: { explanationChain: '#', placementEvidence: '#', beforeFrame: '', duringFrame: '', afterFrame: '' },
       initialReview,
+      policyRecords: policy.records,
       assetPreviewUrls: {},
     };
     return {
@@ -297,16 +321,29 @@ export class ProductOrchestrator {
     };
   }
 
-  async saveReview(projectId: string, review: ProductProjectRecord['review'], approvedPlan: EditPlan, ready: boolean, blockers: string[]): Promise<ProductProjectRecord> {
+  async saveReview(projectId: string, review: ProductProjectRecord['review']): Promise<ProductProjectRecord> {
     if (!review) throw new Error('Review state is required.');
+    assertFunctionalReviewIsolation(review);
     const record = await this.store.get(projectId);
     if (record.workflow.stages.director.status !== 'completed') throw new Error('Director must complete before review can be saved.');
-    if (review.projectId !== projectId || approvedPlan.projectId !== projectId) throw new Error('Review artifacts do not belong to this project.');
-    if (ready && (approvedPlan.status !== 'approved' || blockers.length > 0)) throw new Error('A blocked or unapproved review cannot be marked ready.');
     const artifacts = this.store.artifactDirectory(projectId);
+    const workspace = JSON.parse(await readFile(resolve(artifacts, 'review-workspace.json'), 'utf8')) as ReviewDataPayload;
+    if (!isReviewStateCompatible(workspace, review)) throw new Error('Review state is incompatible with the persisted Director plan.');
+    const resolved = updateReview(workspace, review);
+    const realization = auditPlanRealization(resolved.approvedPlan, workspace.mediaIndex.assets);
+    const realizationBlockers = [
+      ...realization.droppedOperations.map((item) => `${item.operationId}: ${item.reason}`),
+      ...realization.unsupportedOperations.map((item) => `${item.operationId}: ${item.reason}`),
+    ];
+    const blockers = [...resolved.readiness.blockers, ...realizationBlockers];
+    const ready = resolved.readiness.ready && realizationBlockers.length === 0;
+    const approvedPlan: EditPlan = { ...resolved.approvedPlan, status: ready ? 'approved' : 'draft' };
+    const trace = traceCreativeOperations(workspace, review, approvedPlan, realization);
     await Promise.all([
       writeFile(resolve(artifacts, 'review.json'), `${JSON.stringify(review, null, 2)}\n`, 'utf8'),
       writeFile(resolve(artifacts, 'approved-plan.json'), `${JSON.stringify(approvedPlan, null, 2)}\n`, 'utf8'),
+      writeFile(resolve(artifacts, 'plan-realization.json'), `${JSON.stringify(realization, null, 2)}\n`, 'utf8'),
+      writeFile(resolve(artifacts, 'operation-trace.json'), `${JSON.stringify(trace, null, 2)}\n`, 'utf8'),
     ]);
     const workflow = updateProductStage({ ...record.workflow, unresolvedBlockers: blockers }, 'review', ready
       ? { status: 'completed', progress: 100 }
@@ -315,12 +352,19 @@ export class ProductOrchestrator {
       ...record,
       workflow,
       review,
-      artifacts: { ...record.artifacts, review: 'artifacts/review.json', approvedPlan: 'artifacts/approved-plan.json' },
+      artifacts: {
+        ...record.artifacts,
+        review: 'artifacts/review.json',
+        approvedPlan: 'artifacts/approved-plan.json',
+        planRealization: 'artifacts/plan-realization.json',
+        operationTrace: 'artifacts/operation-trace.json',
+      },
     });
   }
 
   private async render(record: ProductProjectRecord): Promise<ProductProjectRecord> {
     if (!record.artifacts.approvedPlan) throw new Error('Approved edit plan artifact is missing.');
+    if (!record.sourceMetadata?.width || !record.sourceMetadata.height) throw new Error('Render is blocked because source orientation is unknown.');
     const capabilities = await this.capabilities();
     if (capabilities.render.state !== 'AVAILABLE') throw new Error(capabilities.render.detail);
     if (!this.adapters.render) throw new Error('Remotion product renderer is not configured for this host.');
@@ -346,8 +390,8 @@ export class ProductOrchestrator {
         fileName: basename(outputPath),
         relativePath: record.artifacts.render,
         durationSeconds: metadata?.durationSeconds ?? 0,
-        width: metadata?.width ?? record.workflow.render.width,
-        height: metadata?.height ?? record.workflow.render.height,
+        width: record.workflow.render.width,
+        height: record.workflow.render.height,
         sizeBytes: info.size,
         qaStatus: passed ? 'PASS' : 'FAIL',
       },

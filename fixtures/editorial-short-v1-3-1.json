@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1.0",
+  "projectId": "editorial-short-v1-3-1",
+  "source": {
+    "width": 1080,
+    "height": 1918,
+    "durationSeconds": 60
+  },
+  "sections": [
+    { "id": "intro", "start": 0, "end": 8, "type": "introduction", "intensity": "normal-teaching", "visualRecommendation": "title-card" },
+    { "id": "main-point", "start": 8, "end": 18, "type": "main-point", "intensity": "emphasis", "visualRecommendation": "keyword-graphic" },
+    { "id": "question", "start": 18, "end": 30, "type": "question", "intensity": "emphasis", "visualRecommendation": "speaker-punch-in" },
+    { "id": "teaching", "start": 30, "end": 45, "type": "teaching", "intensity": "normal-teaching", "visualRecommendation": "speaker-left" },
+    { "id": "story", "start": 45, "end": 55, "type": "story", "intensity": "story-illustration", "visualRecommendation": "image-broll" },
+    { "id": "prayer", "start": 55, "end": 60, "type": "prayer", "intensity": "reverent-calm", "visualRecommendation": "none" }
+  ],
+  "expectedMeaningfulCategories": [
+    "title-treatment",
+    "sermon-point",
+    "reframe",
+    "layout-change",
+    "broll"
+  ]
+}

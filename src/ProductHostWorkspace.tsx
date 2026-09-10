@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { DirectorReviewWorkspace, type ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
-import { updateReview, type ReviewState } from './director-review.ts';
+import type { ReviewState } from './director-review.ts';
 import { productClient } from './product-client.ts';
 import type { ProductCapabilities, ProductProjectRecord } from './product-api.ts';
 import { renderBlockers, type ProductStage, type ProjectSource } from './product-workflow.ts';
+import { formatProfileLabel } from './video-format.ts';
 
 type View = 'projects' | 'new' | 'project' | 'review';
 
@@ -85,10 +86,9 @@ export const ProductHostWorkspace: React.FC = () => {
 
   async function saveReview(review: ReviewState): Promise<void> {
     if (!project || !reviewData) return;
-    const resolved = updateReview(reviewData, review);
     reviewSaveChain.current = reviewSaveChain.current
       .then(async () => {
-        const saved = await productClient.saveReview(project.workflow.projectId, review, resolved.approvedPlan, resolved.readiness.ready, resolved.readiness.blockers);
+        const saved = await productClient.saveReview(project.workflow.projectId, review);
         setProject(saved);
       })
       .catch((reason: unknown) => setError(message(reason)));
@@ -124,6 +124,10 @@ export const ProductHostWorkspace: React.FC = () => {
     {view === 'project' && project && <section className="product-screen">
       <div className="screen-heading"><span>PROJECT</span><h1>{project.workflow.title}</h1><p>{project.sourceMetadata?.fileName ?? (project.workflow.source.type === 'youtube-url' ? project.workflow.source.url : 'Awaiting source upload')}</p></div>
       <div className="project-overview host-overview"><small>CURRENT STATUS</small><strong>{project.workflow.status.replaceAll('_', ' ')}</strong><span>Project ID: {project.workflow.projectId}</span></div>
+      <div className="format-grid">
+        <div><small>SOURCE</small><b>{project.sourceMetadata?.width && project.sourceMetadata.height ? `${project.sourceMetadata.width}×${project.sourceMetadata.height}` : 'Pending metadata'}</b><span>{project.sourceMetadata?.width && project.sourceMetadata.height ? (project.sourceMetadata.width < project.sourceMetadata.height ? 'Portrait' : 'Landscape') : 'Orientation pending'}</span></div>
+        <div><small>OUTPUT</small><b>{formatProfileLabel(project.workflow.render.format).split(' · ')[0]}</b><span>{project.workflow.render.format.orientation === 'portrait' ? 'Portrait' : 'Landscape'} · Preserve source framing</span></div>
+      </div>
       <div className="workflow-row">{Object.entries(project.workflow.stages).map(([name, stage]) => <button key={name} disabled={busy} onClick={() => {
         if (name === 'review') void openReview();
         else if (actionLabels[name as ProductStage]) void runStage(name as ProductStage);
@@ -136,6 +140,7 @@ export const ProductHostWorkspace: React.FC = () => {
       </div>
       {blockers.length > 0 && <div className="render-blockers">{blockers.map((item) => <span key={item}>⚠ {item}</span>)}</div>}
       {project.output && <div className="output-path"><small>FINAL VIDEO · {project.output.qaStatus}</small><code>{project.output.fileName} · {(project.output.sizeBytes / 1024 / 1024).toFixed(1)} MB · {project.output.width}×{project.output.height}</code></div>}
+      {project.qa?.editorial && <div className={`editorial-result ${project.qa.editorial.passed ? 'pass' : 'fail'}`}><small>EDITORIAL QUALITY</small><b>{project.qa.editorial.passed ? 'PASS' : 'REQUIRES ATTENTION'}</b><span>{project.qa.editorial.activity.meaningfulEditCount} meaningful edits · {project.qa.editorial.activity.eventsPerMinute} per minute</span>{project.qa.editorial.failures.map((failure) => <p key={failure}>{failure}</p>)}</div>}
       {project.jobs.length > 0 && <details className="host-jobs"><summary>Job diagnostics</summary>{project.jobs.slice().reverse().map((job) => <div key={job.jobId}><code>{job.jobId}</code><span>{job.stage} · {job.status} · {job.progress ?? 0}%</span>{job.error && <b>{job.error}</b>}</div>)}</details>}
     </section>}
   </div>;

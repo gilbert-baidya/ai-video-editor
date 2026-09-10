@@ -83,7 +83,7 @@ export async function probeSource(path: string, ffprobe: ProductCapability): Pro
   if (ffprobe.state !== 'AVAILABLE') return {};
   const executablePath = ffprobe.detail.split(' is available.')[0];
   const output = await new Promise<string>((done, reject) => {
-    const child = spawn(executablePath, ['-v', 'error', '-show_entries', 'format=duration,size', '-show_entries', 'stream=width,height', '-select_streams', 'v:0', '-of', 'json', path]);
+    const child = spawn(executablePath, ['-v', 'error', '-show_entries', 'format=duration,size:stream=width,height:stream_tags=rotate:stream_side_data=rotation', '-select_streams', 'v:0', '-of', 'json', path]);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -91,13 +91,32 @@ export async function probeSource(path: string, ffprobe: ProductCapability): Pro
     child.once('error', reject);
     child.once('close', (code) => code === 0 ? done(stdout) : reject(new Error(stderr || `ffprobe exited with ${code}.`)));
   });
-  const parsed = JSON.parse(output) as { format?: { duration?: string; size?: string }; streams?: Array<{ width?: number; height?: number }> };
+  const parsed = JSON.parse(output) as VideoProbeResult;
+  const dimensions = effectiveVideoDimensions(parsed);
   return {
     durationSeconds: Number(parsed.format?.duration ?? 0),
     sizeBytes: Number(parsed.format?.size ?? (await stat(path)).size),
-    width: parsed.streams?.[0]?.width,
-    height: parsed.streams?.[0]?.height,
+    width: dimensions?.width,
+    height: dimensions?.height,
   };
+}
+
+export interface VideoProbeResult {
+  format?: { duration?: string; size?: string };
+  streams?: Array<{
+    width?: number;
+    height?: number;
+    tags?: { rotate?: string };
+    side_data_list?: Array<{ rotation?: number }>;
+  }>;
+}
+
+export function effectiveVideoDimensions(probe: VideoProbeResult): { width: number; height: number } | undefined {
+  const stream = probe.streams?.[0];
+  if (!stream?.width || !stream.height) return undefined;
+  const rotation = Number(stream.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation ?? stream.tags?.rotate ?? 0);
+  const quarterTurn = Math.abs(rotation) % 180 === 90;
+  return quarterTurn ? { width: stream.height, height: stream.width } : { width: stream.width, height: stream.height };
 }
 
 export async function fingerprintExistingSource(path: string): Promise<string> {

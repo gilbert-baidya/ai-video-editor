@@ -101,11 +101,11 @@ export interface DirectorProvider {
   repairCoverage?(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult>;
 }
 
-export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.2';
+export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.3.1';
 
 const sectionTypes = new Set<SermonSectionType>(['introduction', 'scripture-reading', 'teaching', 'main-point', 'illustration', 'story', 'testimony', 'question', 'application', 'transition', 'prayer', 'emotional-ministry', 'conclusion', 'altar-call']);
 const intensities = new Set<VisualIntensity>(['reverent-calm', 'normal-teaching', 'story-illustration', 'emphasis']);
-const visualRecommendations = new Set<VisualRecommendation>(['speaker-full', 'speaker-left', 'speaker-right', 'speaker-punch-in', 'scripture-card', 'title-card', 'keyword-graphic', 'image-broll', 'video-broll', 'motion-graphic', 'split-screen', 'none']);
+const visualRecommendations = new Set<VisualRecommendation>(['speaker-full', 'speaker-left', 'speaker-right', 'speaker-punch-in', 'caption', 'scripture-card', 'title-card', 'keyword-graphic', 'image-broll', 'video-broll', 'motion-graphic', 'split-screen', 'none']);
 
 function objectValue(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be an object.`);
@@ -268,9 +268,11 @@ export function promptFor(input: DirectorInput): string {
     'Return only one JSON object. Do not include markdown, prose, timestamps, project IDs, or source IDs.',
     'Use inclusive numbered transcript segment ranges. The application resolves identity and timing.',
     'Respect that prayer, Scripture, altar call, and emotional ministry often need speaker-full or none.',
+    'Reverent Retention does not mean visual inactivity. For ordinary teaching, stories, questions, and emphasis, consider restrained captions, sermon points, punch-ins, reframes, Scripture treatments, contextual B-roll, or an intentional visual reset when semantically useful.',
+    'Do not create constant cuts. Prefer a small number of meaningful, section-aware visual changes over decorative motion.',
     'Allowed sectionType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
-    'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
+    'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
     'JSON shape: {"sections":[{"sectionType":"main-point","startSegment":0,"endSegment":0,"intensity":"emphasis","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     'Do not omit required fields.',
     ...coverageRules,
@@ -491,8 +493,10 @@ export function generateVisualBeats(analysis: SermonAnalysis, trustPolicy?: Cont
 export function createDirectorEditPlan(beats: VideoBeat[], input: DirectorInput, analysisProvider: string, model: string): EditPlan {
   const operations: EditOperation[] = beats.flatMap((beat): EditOperation[] => {
     if (beat.visualType === 'speaker-left' || beat.visualType === 'speaker-right') return [{ id: beat.id, type: 'speaker-position', start: beat.start, end: beat.end, position: beat.visualType === 'speaker-left' ? 'left' : 'right', reason: beat.reason, confidence: beat.confidence }];
+    if (beat.visualType === 'speaker-punch-in') return [{ id: beat.id, type: 'speaker-position', start: beat.start, end: beat.end, position: 'punch-in', reason: beat.reason, confidence: beat.confidence }];
+    if (beat.visualType === 'caption') return [{ id: beat.id, type: 'caption', start: beat.start, end: beat.end, text: beat.suggestedDisplayText ?? beat.transcriptText, textTrust: beat.displayTextTrust ?? 'canonical-transcript', reason: beat.reason, confidence: beat.confidence }];
     if (beat.visualType === 'keyword-graphic' || beat.visualType === 'title-card') return [{ id: beat.id, type: 'sermon-point', start: beat.start, end: beat.end, text: beat.suggestedDisplayText ?? beat.transcriptText, textTrust: beat.displayTextTrust ?? 'canonical-transcript', position: 'right', style: 'director-v1', reason: beat.reason, confidence: beat.confidence }];
-    if (beat.visualType === 'none' || beat.visualType === 'speaker-full' || beat.visualType === 'speaker-punch-in') return [];
+    if (beat.visualType === 'none' || beat.visualType === 'speaker-full') return [{ id: beat.id, type: 'no-change', start: beat.start, end: beat.end, mode: 'canonical-no-change', reason: beat.reason, confidence: beat.confidence }];
     return [{ id: beat.id, type: 'director-placeholder', start: beat.start, end: beat.end, visualType: beat.visualType, text: beat.suggestedDisplayText, textTrust: beat.displayTextTrust, searchQuery: beat.searchQuery, reason: beat.reason, confidence: beat.confidence }];
   });
   return { schemaVersion: '1.1', projectId: input.projectId, sourceTranscriptHash: sha256(input.transcript.originalTranscript), operations, status: 'draft', createdBy: { provider: analysisProvider, model } };

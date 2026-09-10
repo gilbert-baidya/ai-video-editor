@@ -44,6 +44,7 @@ function fixture(): ReviewWorkspaceData {
     { section: noChange, candidates: [], requiredReview: false, noBroll: true },
   ];
   const initialReview = createInitialReviewState({ projectId: aiPlan.projectId, aiPlan, beats }, sha256Browser(JSON.stringify(aiPlan)));
+  initialReview.purpose = 'functional-test';
   return {
     projectId: aiPlan.projectId, title: 'Office-safe Bengali review', languageProfile: 'bn',
     preview: { controlUrl: '', directorUrl: '', durationSeconds: 40, sourceStart: 0, sourceEnd: 40 },
@@ -73,11 +74,16 @@ const canonicalBefore = data.beats.find((beat) => beat.section.id === 'section-2
 const approvedBengali = 'প্রার্থনা করছেন আর উত্তর আপনার দরজার সামনে দাঁড়িয়ে আছে';
 const textApproved = applyReviewAction(initial, 'section-2', 'approve-text', { displayText: approvedBengali });
 if (textApproved.decisions.find((decision) => decision.beatId === 'section-2')?.approvedDisplayText !== approvedBengali) throw new Error('Bengali display text changed.');
+const approvedTextPlan = deriveApprovedEditPlan(data.aiPlan, textApproved);
+const approvedTextOperation = approvedTextPlan.operations.find((operation) => operation.id === 'policy-section-2');
+if (approvedTextOperation?.type !== 'sermon-point' || approvedTextOperation.text !== approvedBengali) {
+  throw new Error('Approved Bengali display text did not reach the final Edit Plan.');
+}
 if (data.beats.find((beat) => beat.section.id === 'section-2')!.section.transcriptText !== canonicalBefore) throw new Error('Canonical Bengali transcript changed.');
 if (!evaluateReviewReadiness(data, accepted, 40).blockers.some((blocker) => blocker.includes('section-1'))) throw new Error('Unverified Scripture did not block readiness.');
 
 console.log(JSON.stringify({
   status: 'PASS',
   mode: 'office-safe-fixture',
-  checks: ['accept', 'reject', 'modify', 'replace', 'revert', 'Bengali display text approval', 'canonical transcript immutability', 'Scripture readiness blocker'],
+  checks: ['accept', 'reject', 'modify', 'replace', 'revert', 'Bengali display text approval and plan realization', 'canonical transcript immutability', 'Scripture readiness blocker'],
 }, null, 2));

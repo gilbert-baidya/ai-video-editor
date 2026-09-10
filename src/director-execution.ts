@@ -144,7 +144,7 @@ export class DeterministicDirectorFallback {
 
 const sectionTypes = new Set(['introduction', 'scripture-reading', 'teaching', 'main-point', 'illustration', 'story', 'testimony', 'question', 'application', 'transition', 'prayer', 'emotional-ministry', 'conclusion', 'altar-call']);
 const intensities = new Set(['reverent-calm', 'normal-teaching', 'story-illustration', 'emphasis']);
-const visualRecommendations = new Set(['speaker-full', 'speaker-left', 'speaker-right', 'speaker-punch-in', 'scripture-card', 'title-card', 'keyword-graphic', 'image-broll', 'video-broll', 'motion-graphic', 'split-screen', 'none']);
+const visualRecommendations = new Set(['speaker-full', 'speaker-left', 'speaker-right', 'speaker-punch-in', 'caption', 'scripture-card', 'title-card', 'keyword-graphic', 'image-broll', 'video-broll', 'motion-graphic', 'split-screen', 'none']);
 
 export function validateResolvedDirectorAnalysis(analysis: SermonAnalysis, input: DirectorInput): string[] {
   const failures: string[] = [];

@@ -1,4 +1,3 @@
-import type { EditPlan } from './contracts.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
 import type { ReviewState } from './director-review.ts';
 import type { CreateProjectRequest, ProductCapabilities, ProductJob, ProductProjectRecord } from './product-api.ts';
@@ -44,10 +43,10 @@ export const productClient = {
     return (await request<{ job: ProductJob }>(`/api/projects/${projectId}/${action}`, { method: 'POST' })).job;
   },
   reviewWorkspace: (projectId: string) => request<ReviewDataPayload>(`/api/projects/${projectId}/review-workspace`),
-  saveReview: async (projectId: string, review: ReviewState, approvedPlan: EditPlan, ready: boolean, blockers: string[]) =>
+  saveReview: async (projectId: string, review: ReviewState) =>
     (await request<{ project: ProductProjectRecord }>(`/api/projects/${projectId}/review`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ review, approvedPlan, ready, blockers }),
+      body: JSON.stringify({ review }),
     })).project,
 };

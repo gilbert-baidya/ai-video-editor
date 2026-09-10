@@ -25,6 +25,7 @@
     "test-director-review-workspace": "tsx scripts/test-director-review-workspace.ts",
     "test-product-workflow-v1-2": "tsx scripts/test-product-workflow-v1-2.ts",
     "test-product-orchestration-v1-3": "tsx scripts/test-product-orchestration-v1-3.ts",
+    "test-editorial-quality-v1-3-1": "tsx scripts/test-editorial-quality-v1-3-1.ts",
     "dev:product": "tsx src/product-server.ts",
     "prove-sol-foundation-fixes": "tsx scripts/prove-sol-foundation-fixes.ts",
     "test-tokenization": "tsx scripts/test-tokenization.ts",

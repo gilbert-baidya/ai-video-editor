@@ -5,7 +5,7 @@ export type LanguageProfile = 'bn' | 'en' | 'mixed';
 export type TranscriptTextSource = 'local-asr' | 'existing-project' | 'manual' | 'hybrid-reviewed';
 export type TimingConfidence = 'word-safe' | 'sentence-safe' | 'segment-safe' | 'review';
 export type VisualIntensity = 'reverent-calm' | 'normal-teaching' | 'story-illustration' | 'emphasis';
-export type VisualRecommendation = 'speaker-full' | 'speaker-left' | 'speaker-right' | 'speaker-punch-in' | 'scripture-card' | 'title-card' | 'keyword-graphic' | 'image-broll' | 'video-broll' | 'motion-graphic' | 'split-screen' | 'none';
+export type VisualRecommendation = 'speaker-full' | 'speaker-left' | 'speaker-right' | 'speaker-punch-in' | 'caption' | 'scripture-card' | 'title-card' | 'keyword-graphic' | 'image-broll' | 'video-broll' | 'motion-graphic' | 'split-screen' | 'none';
 export type DisplayTextTrust = 'canonical-transcript' | 'ai-suggested-unapproved' | 'approved-display' | 'scripture-reference-needs-review' | 'verified-scripture';
 
 export type SermonSectionType = 'introduction' | 'scripture-reading' | 'teaching' | 'main-point' | 'illustration' | 'story' | 'testimony' | 'question' | 'application' | 'transition' | 'prayer' | 'emotional-ministry' | 'conclusion' | 'altar-call';
@@ -395,10 +395,19 @@ export interface VideoBeat {
 export type EditOperation =
   | {
       id: string;
+      type: 'no-change';
+      start: number;
+      end: number;
+      mode: 'keep-pastor-static' | 'canonical-no-change';
+      reason: string;
+      confidence: number;
+    }
+  | {
+      id: string;
       type: 'speaker-position';
       start: number;
       end: number;
-      position: 'left' | 'center' | 'right';
+      position: SpeakerPosition;
       reason: string;
       confidence: number;
     }

@@ -10,6 +10,8 @@ import { ProductOrchestrator } from '../src/product-orchestrator.ts';
 import { parseProjectApiRoute } from '../src/product-http.ts';
 import { ProductProjectStore, assertProjectId, assertWithinRoot, sanitizeFileName } from '../src/product-store.ts';
 import { parseYouTubeUrl, streamUpload } from '../src/source-ingestion.ts';
+import { sha256Browser } from '../src/sha256.ts';
+import type { ReviewState } from '../src/director-review.ts';
 
 const root = await mkdtemp(resolve(tmpdir(), 'ai-video-editor-v1-3-'));
 
@@ -75,6 +77,7 @@ const orchestrator = new ProductOrchestrator(store, root, {
       placement: true,
       bengaliGraphics: true,
       reviewReadiness: true,
+      editorialQuality: true,
       outputPath: output,
     };
   },
@@ -108,7 +111,7 @@ try {
   assert.equal(metadata.sizeBytes, uploadBody.length);
   assert.equal((await readFile(resolve(store.sourceDirectory(created.workflow.projectId), 'sermon.mp4'))).toString(), 'video-fixture');
   assert.equal(metadata.sha256?.length, 64);
-  let project = await orchestrator.attachUploadedSource(created.workflow.projectId, metadata);
+  let project = await orchestrator.attachUploadedSource(created.workflow.projectId, { ...metadata, width: 1920, height: 1080 });
   assert.equal(project.workflow.stages.ingest.status, 'completed');
   await assert.rejects(() => orchestrator.attachUploadedSource(created.workflow.projectId, metadata), /immutable/);
 
@@ -143,14 +146,33 @@ try {
     status: 'approved',
     createdBy: { provider: 'mock-ai', model: 'fixture-v1' },
   };
-  project = await orchestrator.saveReview(created.workflow.projectId, {
+  const review: ReviewState = {
     schemaVersion: '1.0',
     projectId: created.workflow.projectId,
-    sourceEditPlanHash: 'fixture',
+    sourceEditPlanHash: sha256Browser(JSON.stringify(plan)),
     decisions: [],
     updatedAt: new Date().toISOString(),
-  }, plan, true, []);
+    purpose: 'editorial' as const,
+  };
+  await writeFile(resolve(store.artifactDirectory(created.workflow.projectId), 'review-workspace.json'), JSON.stringify({
+    projectId: created.workflow.projectId,
+    title: 'Fixture',
+    languageProfile: 'bn',
+    preview: { controlUrl: '', directorUrl: '', durationSeconds: 2, sourceStart: 0, sourceEnd: 2 },
+    analysis: { version: 'fixture', projectId: created.workflow.projectId, supportingPassages: [], sections: [], mainPoints: [], keyStatements: [], illustrations: [], stories: [], testimonies: [], questions: [], applications: [], prayerMoments: [], emotionalMoments: [], confidence: 1 },
+    aiPlan: plan,
+    mediaIndex: { schemaVersion: '1', indexerVersion: '1', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), roots: [], assets: [] },
+    beats: [],
+    qa: { status: 'PASS', failures: [] },
+    evidence: { explanationChain: '', placementEvidence: '', beforeFrame: '', duringFrame: '', afterFrame: '' },
+    initialReview: review,
+    assetPreviewUrls: {},
+  }));
+  project = await orchestrator.saveReview(created.workflow.projectId, review);
   assert.equal(project.workflow.status, 'READY_TO_RENDER');
+  const persistedApprovedPlan = JSON.parse(await readFile(resolve(store.artifactDirectory(created.workflow.projectId), 'approved-plan.json'), 'utf8')) as EditPlan;
+  assert.deepEqual(persistedApprovedPlan.operations, [], 'The server trusted a client-supplied approved plan.');
+  await assert.rejects(() => orchestrator.saveReview(created.workflow.projectId, { ...review, purpose: 'functional-test' }), /cannot be persisted/);
 
   await orchestrator.startStage(created.workflow.projectId, 'render');
   await orchestrator.waitForStage(created.workflow.projectId, 'render');

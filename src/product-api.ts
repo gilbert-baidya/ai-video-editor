@@ -57,6 +57,8 @@ export interface ProductArtifacts {
   review?: string;
   approvedPlan?: string;
   render?: string;
+  planRealization?: string;
+  operationTrace?: string;
 }
 
 export interface ProductProjectRecord {

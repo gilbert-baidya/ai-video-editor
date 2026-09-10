@@ -52,7 +52,7 @@ export interface VisualPolicyResult {
 }
 
 export const defaultRetentionPolicy: RetentionPolicyConfig = {
-  version: 'reverent-retention-v2.1',
+  version: 'reverent-retention-v2.2-editorial',
   speakerCooldownSeconds: 18,
   graphicCooldownSeconds: 36,
   calmCooldownSeconds: 45,
@@ -76,10 +76,18 @@ function sectionGraphic(section: SermonSection): boolean {
 }
 
 function finalOperation(record: PolicyDecisionRecord): EditOperation[] {
-  if (record.resolvedDecision === 'keep-current' || record.resolvedDecision === 'none' || record.resolvedDecision === 'speaker-full' || record.resolvedDecision === 'speaker-punch-in') return record.resolvedDecision === 'speaker-punch-in' ? [{ id: `policy-${record.segment}`, type: 'speaker-position', start: record.start, end: record.end, position: 'center', reason: record.reason, confidence: record.confidence }] : [];
-  if (record.resolvedDecision === 'speaker-left' || record.resolvedDecision === 'speaker-right') return [{ id: `policy-${record.segment}`, type: 'speaker-position', start: record.start, end: record.end, position: record.resolvedDecision === 'speaker-left' ? 'left' : 'right', reason: record.reason, confidence: record.confidence }];
-  if (record.resolvedDecision === 'scripture-card' || record.resolvedDecision === 'keyword-graphic' || record.resolvedDecision === 'title-card' || record.resolvedDecision === 'motion-graphic') return [{ id: `policy-${record.segment}`, type: 'sermon-point', start: record.start, end: record.end, text: record.displayText ?? '', textTrust: record.displayTextTrust, position: 'right', style: `director-v2-${record.resolvedDecision}`, graphicRegion: record.layout.graphicRegion, layout: record.layout, reason: record.reason, confidence: record.confidence }];
-  return [];
+  const id = `policy-${record.sectionId}`;
+  if (record.resolvedDecision === 'keep-current' || record.resolvedDecision === 'none' || record.resolvedDecision === 'speaker-full') {
+    return [{ id, type: 'no-change', start: record.start, end: record.end, mode: record.resolvedDecision === 'keep-current' ? 'keep-pastor-static' : 'canonical-no-change', reason: record.reason, confidence: record.confidence }];
+  }
+  if (record.resolvedDecision === 'speaker-punch-in') return [{ id, type: 'speaker-position', start: record.start, end: record.end, position: 'punch-in', reason: record.reason, confidence: record.confidence }];
+  if (record.resolvedDecision === 'caption') return [{ id, type: 'caption', start: record.start, end: record.end, text: record.displayText ?? '', textTrust: record.displayTextTrust, reason: record.reason, confidence: record.confidence }];
+  if (record.resolvedDecision === 'speaker-left' || record.resolvedDecision === 'speaker-right') return [{ id, type: 'speaker-position', start: record.start, end: record.end, position: record.resolvedDecision === 'speaker-left' ? 'left' : 'right', reason: record.reason, confidence: record.confidence }];
+  if (record.resolvedDecision === 'scripture-card' || record.resolvedDecision === 'keyword-graphic' || record.resolvedDecision === 'title-card' || record.resolvedDecision === 'motion-graphic') return [{ id, type: 'sermon-point', start: record.start, end: record.end, text: record.displayText ?? '', textTrust: record.displayTextTrust, position: 'right', style: `director-v2-${record.resolvedDecision}`, graphicRegion: record.layout.graphicRegion, layout: record.layout, reason: record.reason, confidence: record.confidence }];
+  if (record.resolvedDecision === 'image-broll' || record.resolvedDecision === 'video-broll' || record.resolvedDecision === 'split-screen') {
+    return [{ id, type: 'director-placeholder', start: record.start, end: record.end, visualType: record.resolvedDecision, text: record.displayText, textTrust: record.displayTextTrust, reason: record.reason, confidence: record.confidence }];
+  }
+  return [{ id, type: 'director-placeholder', start: record.start, end: record.end, visualType: record.resolvedDecision, text: record.displayText, textTrust: record.displayTextTrust, reason: `Unsupported policy mapping: ${record.reason}`, confidence: record.confidence }];
 }
 
 function makeBudget(durationSeconds: number, currentEvents: number): VisualBudget {
@@ -110,14 +118,14 @@ export function applyRetentionPolicy(analysis: SermonAnalysis, projectId: string
     } else if (['speaker-left', 'speaker-right'].includes(recommendation) && history.secondsSinceLastVisualChange < config.speakerCooldownSeconds) {
       decision = 'MODIFY'; resolved = 'keep-current'; reason = `Speaker framing cooldown retained the current frame after ${history.secondsSinceLastVisualChange.toFixed(1)} seconds.`;
     } else if (recommendation === 'image-broll' || recommendation === 'video-broll') {
-      decision = 'MODIFY'; resolved = 'keep-current'; reason = 'B-roll remains a placeholder recommendation and is not shown in the normal sermon preview.';
+      decision = 'REVIEW'; resolved = recommendation; reason = 'B-roll recommendation requires a rights-safe approved asset or an explicit Keep Pastor/reject decision.';
     }
     if (display.warning) warnings.push(`${section.id}: ${display.warning}`);
     const record: PolicyDecisionRecord = { sectionId: section.id, segment: `${section.sourceSegmentIds[0]}-${section.sourceSegmentIds.at(-1)}`, start: section.start, end: section.end, section: section.type, intensity: section.intensity, aiRecommendation: recommendation, policyDecision: decision, resolvedDecision: resolved, layout, displayText, displayTextTrust: display.trust, reason, confidence: section.confidence };
     records.push(record);
     const event = finalOperation(record);
     operations.push(...event);
-    const changed = resolved !== 'keep-current' && resolved !== 'none';
+    const changed = !['keep-current', 'none', 'speaker-full'].includes(resolved);
     if (changed) {
       history.secondsSinceLastVisualChange = 0;
       if (resolved !== 'keep-current') history.lastVisualType = resolved;
@@ -128,7 +136,7 @@ export function applyRetentionPolicy(analysis: SermonAnalysis, projectId: string
     }
     if (decision === 'REVIEW') warnings.push(`${record.segment}: requires human visual review`);
   }
-  const currentEvents = operations.length;
+  const currentEvents = operations.filter((operation) => operation.type !== 'no-change' && operation.type !== 'director-placeholder').length;
   const budget = makeBudget(duration, currentEvents);
   if (currentEvents / Math.max(duration / 60, 1) > config.maxEventsPerMinute) warnings.push(`Event density exceeds ${config.maxEventsPerMinute} events per minute.`);
   return { records, editPlan: { schemaVersion: '2.0', projectId, sourceTranscriptHash, operations, status: 'draft', createdBy: { provider: 'reverent-retention-policy', model: config.version } }, budget, warnings };

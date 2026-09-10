@@ -29,12 +29,13 @@ export function assertWithinRoot(root: string, candidate: string): string {
 function validateRecord(value: unknown): ProductProjectRecord {
   if (!value || typeof value !== 'object') throw new Error('Project metadata must be an object.');
   const record = value as Partial<ProductProjectRecord>;
-  if (record.schemaVersion !== '1.3' || !record.workflow || !recoverProductProject(record.workflow)) {
+  const workflow = record.workflow ? recoverProductProject(record.workflow) : undefined;
+  if (record.schemaVersion !== '1.3' || !workflow) {
     throw new Error('Project metadata has an unsupported or corrupt schema.');
   }
-  assertProjectId(record.workflow.projectId);
+  assertProjectId(workflow.projectId);
   if (!record.artifacts || !Array.isArray(record.jobs) || !record.cacheReuse) throw new Error('Project metadata is incomplete.');
-  return record as ProductProjectRecord;
+  return { ...record, workflow } as ProductProjectRecord;
 }
 
 export class ProductProjectStore {
