@@ -65,6 +65,7 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
     <div className="actions" onClick={(event) => event.stopPropagation()}>
       {decision.status === 'pending' && <button className="primary" onClick={() => onAction('accept')}>Accept</button>}
       {isBroll && <><button disabled={beat.candidates.every((candidate) => !candidate.eligible)} onClick={() => setReplaceMode(true)}>Replace B-roll</button><button onClick={() => onAction('keep-pastor')}>Keep Pastor — Static</button><button onClick={() => onAction('reject', { reason: 'Reviewer rejected the B-roll recommendation without creating a Keep Pastor decision.' })}>Reject B-roll</button></>}
+      {unresolvedBroll && <><button onClick={() => onAction('modify', { operation: { id: `reframe-${section.id}`, type: 'speaker-position', start: section.start, end: section.end, position: 'left', reason: 'Human resolved unavailable B-roll with a restrained speaker reframe.', confidence: section.confidence } })}>Use Reframe</button><button onClick={() => onAction('modify', { operation: { id: `punch-in-${section.id}`, type: 'speaker-position', start: section.start, end: section.end, position: 'punch-in', reason: 'Human resolved unavailable B-roll with a subtle punch-in.', confidence: section.confidence } })}>Use Punch-in</button>{section.suggestedDisplayText && <button onClick={() => onAction('modify', { operation: { id: `caption-${section.id}`, type: 'caption', start: section.start, end: section.end, text: section.suggestedDisplayText!, textTrust: 'ai-suggested-unapproved', reason: 'Human resolved unavailable B-roll with the Director’s concise semantic phrase.', confidence: section.confidence } })}>Use Caption</button>}</>}
       {section.suggestedDisplayText && section.visualRecommendation !== 'scripture-card' && <><button onClick={() => onAction('approve-text', { displayText: section.transcriptText.slice(0, 120), reason: 'Approved from canonical sermon wording.' })}>Approve text</button><button onClick={() => { setDraftText(approvedText ?? section.suggestedDisplayText ?? ''); setEditingText(true); }}>Edit text</button></>}
       {section.visualRecommendation === 'scripture-card' && <button onClick={() => onAction('keep-pastor')}>Remove graphic</button>}
       {decision.status !== 'pending' && <button className="quiet" onClick={() => onAction('revert')}>Revert to AI</button>}
@@ -132,6 +133,8 @@ export const DirectorReviewWorkspace: React.FC<{
   });
   const execution = data.directorExecution;
   const editorial = useMemo(() => summarizeReviewWorkspace(data, review), [data, review]);
+  const directorQuality = data.directorQuality;
+  const enrichment = data.editorialEnrichment;
 
   function selectBeat(beat: ReviewBeat): void {
     setSelectedId(beat.section.id);
@@ -155,6 +158,13 @@ export const DirectorReviewWorkspace: React.FC<{
       <Metric label="Scripture" value={String(editorial.scripture)} />
       <Metric label="Reframes" value={String(editorial.reframes)} />
       <Metric label="Captions" value={String(editorial.captions)} />
+      <Metric label="Director quality" value={directorQuality?.status ?? 'NOT SCORED'} tone={directorQuality?.status === 'LOW-ACTIVITY' ? 'gold' : 'green'} />
+      <Metric label="Story untreated" value={String(directorQuality?.storySectionsWithoutTreatment ?? 0)} tone={directorQuality?.storySectionsWithoutTreatment ? 'gold' : undefined} />
+      <Metric
+        label="Enrichment"
+        value={enrichment ? `${enrichment.outcome.toUpperCase()} · ${enrichment.enrichmentAttemptCount}` : directorQuality?.enrichmentTriggered ? 'REQUIRED · UNAVAILABLE' : 'NOT NEEDED'}
+        tone={enrichment?.outcome === 'failed' || enrichment?.outcome === 'unavailable' ? 'gold' : enrichment?.outcome === 'succeeded' ? 'green' : undefined}
+      />
     </section>
     <main className="workspace">
       <section className="preview-column"><div className="preview-toolbar"><SectionTitle eyebrow="01 · PREVIEW">Director preview</SectionTitle><div className="preview-tabs"><button className={!showControl ? 'active' : ''} onClick={() => setShowControl(false)}>AI Director</button><button className={showControl ? 'active' : ''} onClick={() => setShowControl(true)}>Control</button></div></div><div className="video-frame"><video ref={playerRef} controls src={showControl ? data.preview.controlUrl : data.preview.directorUrl} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} /><div className="preview-badge">{showControl ? 'CONTROL' : 'AI DIRECTOR'} · {time(previewTime)}</div></div><div className="preview-meta"><span>Preview window <b>{time(data.preview.sourceStart)}—{time(data.preview.sourceEnd)}</b> source seconds</span><span>Audio <b>sermon authoritative · AAC</b></span></div><div className="proof-strip"><figure><img src={data.evidence.beforeFrame} alt="Before B-roll frame" /><figcaption>BEFORE · {time(19)}</figcaption></figure><figure className="active-proof"><img src={data.evidence.duringFrame} alt="During B-roll frame" /><figcaption>DURING B-ROLL · pressure cooker visible</figcaption></figure><figure><img src={data.evidence.afterFrame} alt="After B-roll frame" /><figcaption>AFTER · {time(101)}</figcaption></figure></div></section>

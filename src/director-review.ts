@@ -12,6 +12,8 @@ import type {
 import type { DirectorExecutionProvenance, DirectorExecutionSource } from './director-execution.ts';
 import { sha256Browser as sha256 } from './sha256.ts';
 import type { PolicyDecisionRecord } from './visual-policy.ts';
+import type { DirectorQualitySummary } from './editorial-opportunity.ts';
+import type { DirectorEditorialEnrichmentResult } from './director-enrichment.ts';
 
 function validateReviewPlan(plan: EditPlan, duration: number): string[] {
   const failures: string[] = [];
@@ -100,6 +102,12 @@ export interface ReviewWorkspaceData {
   };
   initialReview: ReviewState;
   policyRecords?: PolicyDecisionRecord[];
+  directorQuality?: DirectorQualitySummary;
+  editorialEnrichment?: Pick<DirectorEditorialEnrichmentResult, 'outcome' | 'enrichmentAttemptCount' | 'error'> & {
+    provider?: string;
+    model?: string;
+    cacheReused: boolean;
+  };
 }
 
 export interface ReviewedWorkspaceData extends ReviewWorkspaceData {
@@ -206,7 +214,7 @@ export function applyReviewAction(state: ReviewState, beatId: string, action: Re
   return { ...state, decisions, updatedAt: new Date().toISOString() };
 }
 
-export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' | 'qa' | 'aiPlan' | 'mediaIndex'>, review: ReviewState, durationSeconds: number): ReviewReadiness {
+export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' | 'qa' | 'aiPlan' | 'mediaIndex' | 'directorQuality'>, review: ReviewState, durationSeconds: number): ReviewReadiness {
   const blockers: string[] = [];
   const warnings: string[] = [];
   const decisions = new Map(review.decisions.map((decision) => [decision.beatId, decision]));
@@ -231,6 +239,7 @@ export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' 
   const plan = deriveApprovedEditPlan(data.aiPlan, review, 'approved');
   blockers.push(...validateReviewPlan(plan, durationSeconds));
   if (data.qa.status !== 'PASS') blockers.push(...data.qa.failures.map((failure) => `QA: ${failure}`));
+  if (data.directorQuality?.status === 'LOW-ACTIVITY') warnings.push(`Director quality is LOW-ACTIVITY: ${data.directorQuality.reason}`);
   if (data.beats.some((beat) => beat.noBroll)) warnings.push('No-B-roll decisions remain active for speaker-led and application moments.');
   return { ready: blockers.length === 0, label: blockers.length === 0 ? 'READY FOR FINAL RENDER' : 'REVIEW BLOCKED', blockers, warnings };
 }

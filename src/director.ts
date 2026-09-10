@@ -14,6 +14,7 @@ import { resolveDisplayText, type ContentTrustPolicy } from './content-trust.ts'
 import { resolvePrimarySegmentIds, validateCanonicalCoverage } from './canonical-coverage.ts';
 import { sha256, validatePlan } from './foundation.ts';
 import { measureTranscriptIntegrity } from './transcript-integrity.ts';
+import type { EditorialOpportunity } from './editorial-opportunity.ts';
 
 export interface DirectorInput {
   transcript: TranscriptDocument;
@@ -52,7 +53,7 @@ export interface ProviderAttempt {
   semanticOutput: 'pass' | 'fail';
   canonicalCoverage?: 'pass' | 'fail' | 'not-run';
   runtimeMs: number;
-  phase?: 'analysis' | 'coverage-repair';
+  phase?: 'analysis' | 'coverage-repair' | 'editorial-enrichment';
   error?: string;
 }
 
@@ -72,6 +73,13 @@ export interface DirectorCoverageRepairRequest {
   missingSegmentIds: string[];
   missingSegmentIndices: number[];
   attempt: number;
+}
+
+export interface DirectorEditorialEnrichmentRequest {
+  input: DirectorInput;
+  currentAnalysis: SermonAnalysis;
+  opportunities: EditorialOpportunity[];
+  eligibleSegmentIds: string[];
 }
 
 export interface DirectorProviderAvailability {
@@ -99,9 +107,11 @@ export interface DirectorProvider {
    * covering ONLY the uncovered primary canonical segments.
    */
   repairCoverage?(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult>;
+  /** Optional single bounded pass for semantically eligible sections in an editorially barren plan. */
+  enrichEditorial?(request: DirectorEditorialEnrichmentRequest): Promise<DirectorProviderResult>;
 }
 
-export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.3.1';
+export const DIRECTOR_PROMPT_SCHEMA_VERSION = 'director-prompt-schema-v1.3.2';
 
 const sectionTypes = new Set<SermonSectionType>(['introduction', 'scripture-reading', 'teaching', 'main-point', 'illustration', 'story', 'testimony', 'question', 'application', 'transition', 'prayer', 'emotional-ministry', 'conclusion', 'altar-call']);
 const intensities = new Set<VisualIntensity>(['reverent-calm', 'normal-teaching', 'story-illustration', 'emphasis']);
@@ -270,6 +280,12 @@ export function promptFor(input: DirectorInput): string {
     'Respect that prayer, Scripture, altar call, and emotional ministry often need speaker-full or none.',
     'Reverent Retention does not mean visual inactivity. For ordinary teaching, stories, questions, and emphasis, consider restrained captions, sermon points, punch-ins, reframes, Scripture treatments, contextual B-roll, or an intentional visual reset when semantically useful.',
     'Do not create constant cuts. Prefer a small number of meaningful, section-aware visual changes over decorative motion.',
+    'Main points: actively consider a concise sermon-point, semantic caption, punch-in, or reframe.',
+    'Rhetorical questions: actively consider a short emphasis caption, punch-in, or restrained reframe.',
+    'Normal teaching: consider occasional concise captions or subtle reframing where comprehension benefits.',
+    'Stories and illustrations: actively consider contextual B-roll first; when B-roll is not semantically justified, consider a caption, punch-in, or reframe.',
+    'Strong emphasis: consider a key phrase, punch-in, or visual reset.',
+    'No Change is deliberate, not the safest default. For eligible normal teaching/story/emphasis sections, explain why No Change is better than the available restrained alternatives.',
     'Allowed sectionType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
     'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
@@ -291,6 +307,31 @@ export function coverageRepairPromptFor(input: DirectorInput, missingIndices: nu
     'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     `Uncovered primary segment indices: ${missingIndices.join(', ')}.`,
     `Numbered transcript segments (full context):\n${numberedSegments(input)}`,
+  ].join('\n');
+}
+
+export function editorialEnrichmentPromptFor(request: DirectorEditorialEnrichmentRequest): string {
+  const eligible = request.opportunities.map((item) => ({
+    sectionId: item.sectionId,
+    semanticType: item.semanticType,
+    intensity: item.intensity,
+    visualOpportunity: item.visualOpportunity,
+    eligibleVisualTypes: item.eligibleVisualTypes,
+    reason: item.reason,
+  }));
+  return [
+    'You are performing one bounded editorial enrichment pass for a reverent Bengali sermon edit.',
+    'Return only one JSON object using the established Director schema. Return revised decisions only for the requested weak primary segments.',
+    'Preserve every canonical segment identity and timing. Cover every requested primary segment exactly once.',
+    'Preserve sermon meaning and Reverent Retention. Do not modify prayer, Scripture reading, altar-call, or emotional-ministry sections merely to increase activity.',
+    'Inspect eligible main-point, question, teaching, story, illustration, and emphasis sections for semantically justified visual opportunities.',
+    'Use restrained professional edits. Avoid repetitive visual types, meaningless cuts, fabricated Scripture, and unrelated B-roll concepts.',
+    'For story or illustration content, actively consider contextual B-roll. If B-roll is not justified, consider a concise caption, punch-in, or reframe rather than defaulting automatically to No Change.',
+    'Captions and sermon-point text must be short phrases grounded in the canonical transcript, not the entire transcript.',
+    'No Change remains valid, but explain why it is better than the eligible restrained alternatives.',
+    `Editorial opportunities:\n${JSON.stringify(eligible)}`,
+    `Numbered transcript segments:\n${numberedSegments(request.input)}`,
+    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","suggestedDisplayText":"optional concise canonical phrase","visualRecommendation":"caption","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
   ].join('\n');
 }
 
@@ -348,15 +389,16 @@ export class OllamaDirectorProvider implements DirectorProvider {
   private async generate(
     input: DirectorInput,
     prompt: string,
-    phase: 'analysis' | 'coverage-repair',
+    phase: 'analysis' | 'coverage-repair' | 'editorial-enrichment',
     requiredSegmentIds: string[],
+    attemptLimit = this.maxAttempts,
   ): Promise<DirectorProviderResult> {
     validateDirectorInput(input);
     const started = Date.now();
     const attempts: ProviderAttempt[] = [];
     const rawResponses: DirectorProviderResult['rawResponses'] = [];
     let lastError = 'Unknown structured-output failure';
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+    for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
       const attemptStarted = Date.now();
       const record: ProviderAttempt = { attempt, parse: 'fail', schema: 'fail', segmentReferences: 'fail', semanticOutput: 'fail', canonicalCoverage: 'not-run', runtimeMs: 0, phase };
       try {
@@ -423,6 +465,17 @@ export class OllamaDirectorProvider implements DirectorProvider {
       coverageRepairPromptFor(request.input, request.missingSegmentIndices),
       'coverage-repair',
       request.missingSegmentIds,
+    );
+  }
+
+  async enrichEditorial(request: DirectorEditorialEnrichmentRequest): Promise<DirectorProviderResult> {
+    const input = { ...request.input, primarySegmentIds: request.eligibleSegmentIds };
+    return this.generate(
+      input,
+      editorialEnrichmentPromptFor({ ...request, input }),
+      'editorial-enrichment',
+      request.eligibleSegmentIds,
+      1,
     );
   }
 }

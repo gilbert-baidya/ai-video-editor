@@ -8,6 +8,7 @@ export interface VisualHistory {
   lastVisualType?: VisualRecommendation;
   lastSpeakerPosition?: SpeakerPosition;
   secondsSinceLastVisualChange: number;
+  secondsSinceLastSpeakerChange: number;
   recentGraphicTypes: string[];
 }
 
@@ -95,7 +96,7 @@ function makeBudget(durationSeconds: number, currentEvents: number): VisualBudge
 }
 
 export function applyRetentionPolicy(analysis: SermonAnalysis, projectId: string, sourceTranscriptHash: string, duration: number, config: RetentionPolicyConfig = defaultRetentionPolicy, trustPolicy?: ContentTrustPolicy): VisualPolicyResult {
-  const history: VisualHistory = { secondsSinceLastVisualChange: Number.POSITIVE_INFINITY, recentGraphicTypes: [] };
+  const history: VisualHistory = { secondsSinceLastVisualChange: Number.POSITIVE_INFINITY, secondsSinceLastSpeakerChange: Number.POSITIVE_INFINITY, recentGraphicTypes: [] };
   const records: PolicyDecisionRecord[] = [];
   const operations: EditOperation[] = [];
   const warnings: string[] = [];
@@ -115,8 +116,8 @@ export function applyRetentionPolicy(analysis: SermonAnalysis, projectId: string
       decision = 'REVIEW'; resolved = 'keep-current'; reason = 'Graphic display text is missing or exceeds the configured line budget.';
     } else if (graphic && history.secondsSinceLastVisualChange < (calm ? config.calmCooldownSeconds : config.graphicCooldownSeconds) && section.type !== 'main-point') {
       decision = 'MODIFY'; resolved = 'keep-current'; reason = `Graphic cooldown retained the current frame after ${history.secondsSinceLastVisualChange.toFixed(1)} seconds.`;
-    } else if (['speaker-left', 'speaker-right'].includes(recommendation) && history.secondsSinceLastVisualChange < config.speakerCooldownSeconds) {
-      decision = 'MODIFY'; resolved = 'keep-current'; reason = `Speaker framing cooldown retained the current frame after ${history.secondsSinceLastVisualChange.toFixed(1)} seconds.`;
+    } else if (['speaker-left', 'speaker-right', 'speaker-punch-in'].includes(recommendation) && history.secondsSinceLastSpeakerChange < config.speakerCooldownSeconds) {
+      decision = 'MODIFY'; resolved = 'keep-current'; reason = `Speaker framing cooldown retained the current frame after ${history.secondsSinceLastSpeakerChange.toFixed(1)} seconds.`;
     } else if (recommendation === 'image-broll' || recommendation === 'video-broll') {
       decision = 'REVIEW'; resolved = recommendation; reason = 'B-roll recommendation requires a rights-safe approved asset or an explicit Keep Pastor/reject decision.';
     }
@@ -129,10 +130,16 @@ export function applyRetentionPolicy(analysis: SermonAnalysis, projectId: string
     if (changed) {
       history.secondsSinceLastVisualChange = 0;
       if (resolved !== 'keep-current') history.lastVisualType = resolved;
-      history.lastSpeakerPosition = layout.speakerPosition;
+      if (['speaker-left', 'speaker-right', 'speaker-punch-in'].includes(resolved)) {
+        history.lastSpeakerPosition = layout.speakerPosition;
+        history.secondsSinceLastSpeakerChange = 0;
+      } else {
+        history.secondsSinceLastSpeakerChange += section.end - section.start;
+      }
       if (graphic) history.recentGraphicTypes.push(resolved);
     } else {
       history.secondsSinceLastVisualChange += section.end - section.start;
+      history.secondsSinceLastSpeakerChange += section.end - section.start;
     }
     if (decision === 'REVIEW') warnings.push(`${record.segment}: requires human visual review`);
   }

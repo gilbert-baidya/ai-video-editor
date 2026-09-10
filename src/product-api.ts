@@ -59,6 +59,8 @@ export interface ProductArtifacts {
   render?: string;
   planRealization?: string;
   operationTrace?: string;
+  directorQuality?: string;
+  directorEnrichment?: string;
 }
 
 export interface ProductProjectRecord {

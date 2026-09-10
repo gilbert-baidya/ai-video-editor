@@ -251,11 +251,24 @@ export class ProductOrchestrator {
     if (result.reviewWorkspace) {
       await writeFile(resolve(this.store.artifactDirectory(record.workflow.projectId), 'review-workspace.json'), `${JSON.stringify(result.reviewWorkspace, null, 2)}\n`, 'utf8');
     }
+    const directorQuality = result.reviewWorkspace?.directorQuality;
+    if (directorQuality) {
+      await writeFile(resolve(this.store.artifactDirectory(record.workflow.projectId), 'director-quality.json'), `${JSON.stringify(directorQuality, null, 2)}\n`, 'utf8');
+    }
+    const directorEnrichment = result.reviewWorkspace?.editorialEnrichment;
+    if (directorEnrichment) {
+      await writeFile(resolve(this.store.artifactDirectory(record.workflow.projectId), 'director-enrichment.json'), `${JSON.stringify(directorEnrichment, null, 2)}\n`, 'utf8');
+    }
     const completed = this.completedRecord(record, 'director', result.cacheReused);
     return this.store.save({
       ...completed,
       workflow: { ...completed.workflow, provider: result.provenance, coveragePercent: result.coveragePercent },
-      artifacts: { ...record.artifacts, director: 'artifacts/director.json' },
+      artifacts: {
+        ...record.artifacts,
+        director: 'artifacts/director.json',
+        directorQuality: directorQuality ? 'artifacts/director-quality.json' : undefined,
+        directorEnrichment: directorEnrichment ? 'artifacts/director-enrichment.json' : undefined,
+      },
     });
   }
 
@@ -305,6 +318,15 @@ export class ProductOrchestrator {
       evidence: { explanationChain: '#', placementEvidence: '#', beforeFrame: '', duringFrame: '', afterFrame: '' },
       initialReview,
       policyRecords: policy.records,
+      directorQuality: result.directorQuality,
+      editorialEnrichment: {
+        outcome: result.editorialEnrichment.outcome,
+        enrichmentAttemptCount: result.editorialEnrichment.enrichmentAttemptCount,
+        error: result.editorialEnrichment.error,
+        provider: result.editorialEnrichment.providerResult?.provider,
+        model: result.editorialEnrichment.providerResult?.model,
+        cacheReused: result.editorialEnrichmentCache.hit,
+      },
       assetPreviewUrls: {},
     };
     return {
@@ -317,7 +339,7 @@ export class ProductOrchestrator {
         fallbackUsed: result.provenance.fallbackUsed,
       },
       coveragePercent: result.coverage.coveragePercent,
-      cacheReused: result.chunkExecutions.every((item) => item.cache.hit),
+      cacheReused: result.chunkExecutions.every((item) => item.cache.hit) && result.editorialEnrichmentCache.hit,
     };
   }
 

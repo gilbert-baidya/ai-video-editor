@@ -20,5 +20,21 @@
     "reframe",
     "layout-change",
     "broll"
-  ]
+  ],
+  "directorScenarios": {
+    "initialBarren": {
+      "main-point": "speaker-full",
+      "question": "speaker-full",
+      "teaching": "speaker-full",
+      "story": "speaker-full",
+      "prayer": "none"
+    },
+    "enrichedExpectedCategories": {
+      "main-point": ["keyword-graphic", "caption", "speaker-punch-in"],
+      "question": ["caption", "speaker-punch-in", "speaker-left", "speaker-right"],
+      "teaching": ["caption", "speaker-left", "speaker-right", "speaker-punch-in"],
+      "story": ["image-broll", "video-broll", "caption", "speaker-punch-in"],
+      "prayer": ["speaker-full", "none"]
+    }
+  }
 }

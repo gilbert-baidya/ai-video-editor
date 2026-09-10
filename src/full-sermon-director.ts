@@ -20,6 +20,8 @@ import {
 import { runCachedStage, type StageRunResult } from './stage-cache.ts';
 import { DIRECTOR_COVERAGE_CONTRACT_VERSION } from './canonical-coverage.ts';
 import { sha256 } from './foundation.ts';
+import { runBoundedEditorialEnrichment, type DirectorEditorialEnrichmentResult } from './director-enrichment.ts';
+import type { DirectorQualitySummary } from './editorial-opportunity.ts';
 
 export interface FullSermonDirectorOptions {
   provider?: DirectorProvider;
@@ -43,6 +45,9 @@ export interface FullSermonDirectorResult {
   reconciliation: ChunkReconciliationResult;
   provenance: DirectorExecutionProvenance;
   coverage: FullSermonCoverageSummary;
+  directorQuality: DirectorQualitySummary;
+  editorialEnrichment: DirectorEditorialEnrichmentResult;
+  editorialEnrichmentCache: StageRunResult<DirectorEditorialEnrichmentResult>['cache'];
 }
 
 export interface FullSermonCoverageSummary {
@@ -130,7 +135,24 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
     ? await runCachedStage(options.cacheRoot, 'director-normalization', { transcriptHash, reconciliationInputHash, coverageContract: DIRECTOR_COVERAGE_CONTRACT_VERSION }, 'v1.2', reconcile)
     : await uncached(reconcile);
   const chunkProvenance = chunkExecutions.map(({ execution }) => execution.provenance);
-  const reconciliation = reconciliationStage.value;
+  const enrichmentProvider = chunkExecutions.every(({ execution }) => execution.provenance.source === 'ai') ? provider : undefined;
+  const enrichmentInputHash = sha256(JSON.stringify({
+    analysis: reconciliationStage.value.analysis,
+    providerIdentity: enrichmentProvider?.cacheIdentity ?? 'not-configured',
+    maxAttempts: 1,
+  }));
+  const enrichmentStage = options.cacheRoot
+    ? await runCachedStage(
+      options.cacheRoot,
+      'director-editorial-enrichment',
+      { transcriptHash, enrichmentInputHash },
+      'v1.3.2',
+      () => runBoundedEditorialEnrichment(transcript, reconciliationStage.value.analysis, enrichmentProvider, 1),
+      (value) => !value.error,
+    )
+    : await uncached(() => runBoundedEditorialEnrichment(transcript, reconciliationStage.value.analysis, enrichmentProvider, 1));
+  const editorialEnrichment = enrichmentStage.value;
+  const reconciliation = { ...reconciliationStage.value, analysis: editorialEnrichment.analysis };
   const gapProvenance = reconciliation.records.some((record) => record.type === 'gap-fill')
     ? Object.values(reconciliation.sectionProvenance).find((item) => item.provider === 'deterministic-fallback')
     : undefined;
@@ -152,13 +174,19 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
     providerChunkCount: chunkExecutions.length,
     providerSuccessCount: chunkExecutions.filter(({ execution }) => execution.provenance.source === 'ai').length,
   };
+  const successfulEnrichment = editorialEnrichment.outcome === 'succeeded' ? editorialEnrichment.providerResult : undefined;
   return {
     chunks,
     chunkExecutions,
     reconciliation,
     coverage,
+    directorQuality: editorialEnrichment.quality,
+    editorialEnrichment,
+    editorialEnrichmentCache: enrichmentStage.cache,
     provenance: {
       ...provenance,
+      durationMs: provenance.durationMs + (successfulEnrichment?.runtimeMs ?? 0),
+      attempts: [...provenance.attempts, ...(successfulEnrichment?.attempts ?? [])],
       canonicalCoverageValidation: coverage.canonicalCoverageComplete ? provenance.canonicalCoverageValidation : 'FAIL',
       canonicalCoverageComplete: coverage.canonicalCoverageComplete,
       coverage: {

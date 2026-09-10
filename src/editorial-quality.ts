@@ -33,13 +33,18 @@ export interface EditorialActivitySummary {
 }
 
 export interface EditorialQualityResult {
+  contractVersion: typeof EDITORIAL_QUALITY_CONTRACT_VERSION;
   passed: boolean;
   failures: string[];
+  failureCodes: EditorialQualityFailureCode[];
   warnings: string[];
   activity: EditorialActivitySummary;
   staticStretches: Array<{ sectionId: string; start: number; end: number; reason: string }>;
   realization: PlanRealizationAudit;
 }
+
+export const EDITORIAL_QUALITY_CONTRACT_VERSION = 'editorial-quality-v1.3.1';
+export type EditorialQualityFailureCode = 'FORMAT_INTEGRITY' | 'EDIT_ACTIVITY' | 'PLAN_REALIZATION' | 'TEXT_QUALITY' | 'START_END_POLISH';
 
 export interface CreativeOperationTrace {
   beatId: string;
@@ -211,6 +216,11 @@ export function evaluateEditorialQuality(input: {
     if ((operation.type === 'sermon-point' || operation.type === 'full-screen-card' || operation.type === 'caption') && (!operation.text.trim() || /^(todo|placeholder|tbd)$/i.test(operation.text.trim()))) {
       failures.push(`Text quality: ${operation.id} has missing or placeholder display text.`);
     }
+    if (operation.type === 'caption') {
+      if (operation.text.length > 120 || operation.text.split(/\n/u).length > 2) failures.push(`Text quality: ${operation.id} is too long for a semantic emphasis caption.`);
+      const matchingSection = input.analysis.sections.find((section) => operation.start < section.end && section.start < operation.end);
+      if (matchingSection && operation.text.trim() === matchingSection.transcriptText.trim()) failures.push(`Text quality: ${operation.id} repeats the entire canonical section instead of a concise emphasis phrase.`);
+    }
   }
   for (const boundary of ['introduction', 'conclusion'] as const) {
     const sections = input.analysis.sections.filter((section) => section.type === boundary && section.visualRecommendation === 'title-card');
@@ -220,7 +230,14 @@ export function evaluateEditorialQuality(input: {
       }
     }
   }
-  return { passed: failures.length === 0, failures, warnings, activity, staticStretches, realization };
+  const failureCodes = [...new Set(failures.map((failure): EditorialQualityFailureCode => {
+    if (failure.startsWith('Format integrity:')) return 'FORMAT_INTEGRITY';
+    if (failure.startsWith('Edit activity:')) return 'EDIT_ACTIVITY';
+    if (failure.startsWith('Plan realization:')) return 'PLAN_REALIZATION';
+    if (failure.startsWith('Text quality:')) return 'TEXT_QUALITY';
+    return 'START_END_POLISH';
+  }))];
+  return { contractVersion: EDITORIAL_QUALITY_CONTRACT_VERSION, passed: failures.length === 0, failures, failureCodes, warnings, activity, staticStretches, realization };
 }
 
 export function summarizeReviewWorkspace(data: ReviewWorkspaceData, review: ReviewState): EditorialActivitySummary {

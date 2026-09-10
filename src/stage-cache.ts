@@ -10,6 +10,7 @@ export const PIPELINE_STAGES = [
   'sermon-chunk-generation',
   'director-analysis',
   'director-normalization',
+  'director-editorial-enrichment',
   'edit-plan',
   'visual-intelligence',
   'media-ranking',
