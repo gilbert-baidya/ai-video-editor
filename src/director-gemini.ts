@@ -1,3 +1,4 @@
+import { detectCoarseSegmentation } from './director.js';
 import { GoogleGenAI, Type, Schema } from '@google/genai';
 import type {
   DirectorProvider,
@@ -22,6 +23,7 @@ import { sha256 } from './foundation.ts';
 const semanticSchema: Schema = {
   type: Type.OBJECT,
   properties: {
+    overallSemanticRole: { type: Type.STRING, description: "The overarching narrative form (e.g. 'story', 'teaching')." },
     sections: {
       type: Type.ARRAY,
       items: {
@@ -29,17 +31,19 @@ const semanticSchema: Schema = {
         properties: {
           sectionType: { type: Type.STRING },
           secondaryType: { type: Type.STRING },
+          semanticFunction: { type: Type.STRING, description: "The narrative function of this specific section (e.g. 'setup', 'problem', 'conflict', 'turning-point', 'main-point', 'application', 'conclusion')." },
           startIndex: { type: Type.INTEGER, description: "Integer index of the starting segment (0-based array index, NOT a timestamp)." },
           endIndex: { type: Type.INTEGER, description: "Integer index of the ending segment (0-based array index, NOT a timestamp)." },
           semanticConfidence: { type: Type.NUMBER },
           semanticEvidence: { type: Type.STRING },
+          boundaryReason: { type: Type.STRING, description: "Why does this section start here? E.g., 'topic shift', 'conflict introduced', 'rhetorical question'." },
         },
-        required: ["sectionType", "startIndex", "endIndex", "semanticConfidence", "semanticEvidence"]
+        required: ["sectionType", "semanticFunction", "startIndex", "endIndex", "semanticConfidence", "semanticEvidence", "boundaryReason"]
       }
     },
     overallConfidence: { type: Type.NUMBER }
   },
-  required: ["sections", "overallConfidence"]
+  required: ["overallSemanticRole", "sections", "overallConfidence"]
 };
 
 const visualSchema: Schema = {
@@ -59,6 +63,18 @@ const visualSchema: Schema = {
           suggestedDisplayText: { type: Type.STRING },
           scriptureReference: { type: Type.STRING },
           visualRecommendation: { type: Type.STRING },
+          brollIntent: {
+            type: Type.OBJECT,
+            properties: {
+              subject: { type: Type.STRING },
+              action: { type: Type.STRING },
+              setting: { type: Type.STRING },
+              mood: { type: Type.STRING },
+              visualPurpose: { type: Type.STRING },
+              exclusions: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["subject", "action", "setting", "mood", "visualPurpose", "exclusions"]
+          },
           confidence: { type: Type.NUMBER },
           reason: { type: Type.STRING }
         },
@@ -193,20 +209,30 @@ export class GeminiDirectorProvider implements DirectorProvider {
     let semanticResult = await this.generate(input, semanticAnalysisPromptFor(input), 'analysis', required, semanticSchema);
     if (semanticResult.providerResult !== 'ai-success' && semanticResult.providerResult !== 'ai-retry-success') return semanticResult;
     
-    // Check for ambiguity
-    let ambiguous = false;
-    for (const sec of semanticResult.analysis!.sections) {
-      if (validateClassificationAmbiguity(sec)) {
-        ambiguous = true;
-        break;
-      }
-    }
+    // Diagnostics and Coarse Segmentation check
+    const diagnostics = detectCoarseSegmentation(semanticResult.analysis!, input.projectDuration);
     
-    if (ambiguous) {
-      // Reconcile once
-      const reconResult = await this.generate(input, semanticReconciliationPromptFor(input, semanticResult.analysis!.sections), 'analysis', required, semanticSchema, 1);
+    if (diagnostics.coarseSegmentationRisk !== 'NORMAL') {
+      const reason = `Coarse segmentation detected (${diagnostics.coarseSegmentationRisk}). The timeline is ${input.projectDuration}s but produced ${diagnostics.sectionCount} section(s). The longest is ${diagnostics.longestSectionDuration}s. Refine boundaries where semantic intent changes (e.g., from 'story' to 'main-point', or new story event).`;
+      const reconResult = await this.generate(input, semanticAnalysisPromptFor(input, reason), 'analysis', required, semanticSchema, 1);
       if (reconResult.providerResult === 'ai-success' || reconResult.providerResult === 'ai-retry-success') {
         semanticResult = reconResult;
+      }
+    } else {
+      // Check for ambiguity
+      let ambiguous = false;
+      for (const sec of semanticResult.analysis!.sections) {
+        if (validateClassificationAmbiguity(sec)) {
+          ambiguous = true;
+          break;
+        }
+      }
+      
+      if (ambiguous) {
+        const reconResult = await this.generate(input, semanticReconciliationPromptFor(input, semanticResult.analysis!.sections), 'analysis', required, semanticSchema, 1);
+        if (reconResult.providerResult === 'ai-success' || reconResult.providerResult === 'ai-retry-success') {
+          semanticResult = reconResult;
+        }
       }
     }
     
@@ -222,6 +248,7 @@ export class GeminiDirectorProvider implements DirectorProvider {
         ...semSec,
         intensity: visSec.intensity,
         visualRecommendation: visSec.visualRecommendation,
+        brollIntent: visSec.brollIntent,
         suggestedDisplayText: visSec.suggestedDisplayText,
         scriptureReference: visSec.scriptureReference,
         confidence: visSec.confidence,

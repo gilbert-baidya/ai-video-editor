@@ -21,6 +21,18 @@ export interface ScriptureReference {
   verificationStatus: 'detected' | 'needs-review' | 'verified';
 }
 
+
+export interface AIBrollIntent {
+  subject: string;
+  action: string;
+  setting: string;
+  mood: string;
+  visualPurpose: string;
+  exclusions: string[];
+}
+
+export type AssetRelevance = 'HIGH' | 'MEDIUM' | 'LOW' | 'MISMATCH';
+
 export interface SermonSection {
   id: string;
   start: number;
@@ -31,6 +43,9 @@ export interface SermonSection {
   secondaryType?: SermonSectionType;
   semanticConfidence?: number;
   semanticEvidence?: string;
+  semanticFunction?: string;
+  boundaryReason?: string;
+  brollIntent?: AIBrollIntent;
   intensity?: VisualIntensity;
   suggestedDisplayText?: string;
   scriptureReference?: string;
@@ -71,6 +86,7 @@ export interface SermonAnalysis {
   version: string;
   projectId: string;
   title?: string;
+  overallSemanticRole?: string;
   mainTheme?: string;
   mainPassage?: ScriptureReference;
   supportingPassages: ScriptureReference[];
@@ -184,6 +200,7 @@ export interface MediaCandidate {
   repetitionPenalty: number;
   reasons: string[];
   eligible: boolean;
+  relevance?: AssetRelevance;
 }
 
 export interface BrollIntent {
@@ -193,6 +210,7 @@ export interface BrollIntent {
   decision: 'search' | 'no-broll';
   reason: string;
   search?: MediaSearchIntent;
+  aiIntent?: AIBrollIntent;
 }
 
 export interface MediaUsageHistory {

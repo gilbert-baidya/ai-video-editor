@@ -33,6 +33,9 @@ export interface AISermonSection {
   secondaryType?: SermonSectionType;
   semanticConfidence?: number;
   semanticEvidence?: string;
+  semanticFunction?: string;
+  boundaryReason?: string;
+  brollIntent?: AIBrollIntent;
   
   startSegment: number;
   endSegment: number;
@@ -45,7 +48,9 @@ export interface AISermonSection {
   reason: string;
 }
 
+import type { AIBrollIntent } from './contracts.ts';
 export interface AISermonResponse {
+  overallSemanticRole?: string;
   sections: AISermonSection[];
   overallConfidence: number;
 }
@@ -164,11 +169,24 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
     if (!Number.isInteger(startSegment) || !Number.isInteger(endSegment) || startSegment < 0 || endSegment < startSegment) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
     if (startSegment >= segmentCount || endSegment >= segmentCount) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
     if (confidence < 0 || confidence > 1) throw new Error(`Invalid confidence at sections[${index}].confidence`);
+    const bIntent = item.brollIntent as any;
+    const brollIntent = bIntent ? {
+      subject: stringValue(bIntent.subject, `sections[${index}].brollIntent.subject`),
+      action: stringValue(bIntent.action, `sections[${index}].brollIntent.action`),
+      setting: stringValue(bIntent.setting, `sections[${index}].brollIntent.setting`),
+      mood: stringValue(bIntent.mood, `sections[${index}].brollIntent.mood`),
+      visualPurpose: stringValue(bIntent.visualPurpose, `sections[${index}].brollIntent.visualPurpose`),
+      exclusions: Array.isArray(bIntent.exclusions) ? bIntent.exclusions.map((e: any) => String(e)) : []
+    } : undefined;
+
     return {
       sectionType,
       secondaryType: item.secondaryType ? stringValue(item.secondaryType, `sections[${index}].secondaryType`) as any : undefined,
       semanticConfidence,
       semanticEvidence: item.semanticEvidence ? stringValue(item.semanticEvidence, `sections[${index}].semanticEvidence`) : '',
+      semanticFunction: item.semanticFunction ? stringValue(item.semanticFunction, `sections[${index}].semanticFunction`) : undefined,
+      boundaryReason: item.boundaryReason ? stringValue(item.boundaryReason, `sections[${index}].boundaryReason`) : undefined,
+      brollIntent,
       startSegment,
       endSegment,
       intensity,
@@ -179,12 +197,13 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
       reason: item.reason ? stringValue(item.reason, `sections[${index}].reason`) : 'Semantic pass',
     };
   });
-  const overallConfidence = numberValue(root.overallConfidence, 'overallConfidence');
+  const overallConfidence = root.overallConfidence ? numberValue(root.overallConfidence, 'overallConfidence') : 1.0;
   if (overallConfidence < 0 || overallConfidence > 1) throw new Error('Invalid overallConfidence.');
+  const overallSemanticRole = root.overallSemanticRole ? stringValue(root.overallSemanticRole, 'overallSemanticRole') : undefined;
   for (let index = 1; index < sections.length; index += 1) {
     if (sections[index].startSegment <= sections[index - 1].endSegment) throw new Error(`Sections must be ordered and non-overlapping at sections[${index}].`);
   }
-  return { sections, overallConfidence };
+  return { overallSemanticRole, sections, overallConfidence };
 }
 
 export function validateDirectorInput(input: DirectorInput): void {
@@ -220,6 +239,12 @@ function resolveSection(aiSection: AISermonSection, index: number, segments: Tra
     transcriptText: selected.map((segment) => segment.text).join(' '),
     sourceSegmentIds,
     type: aiSection.sectionType,
+    secondaryType: aiSection.secondaryType,
+    semanticConfidence: aiSection.semanticConfidence,
+    semanticEvidence: aiSection.semanticEvidence,
+    semanticFunction: aiSection.semanticFunction,
+    boundaryReason: aiSection.boundaryReason,
+    brollIntent: aiSection.brollIntent,
     intensity: aiSection.intensity,
     suggestedDisplayText: aiSection.suggestedDisplayText,
     scriptureReference: aiSection.scriptureReference,
@@ -238,6 +263,7 @@ export function resolveAIResponse(response: AISermonResponse, input: DirectorInp
   return {
     version: '1.1',
     projectId: input.projectId,
+    overallSemanticRole: response.overallSemanticRole,
     title: mainPoint?.suggestedDisplayText,
     mainTheme: mainPoint?.suggestedDisplayText,
     mainPassage: passage?.scriptureReference ? { rawText: passage.scriptureReference, normalizedReference: passage.scriptureReference, start: passage.start, end: passage.end, confidence: passage.confidence, verificationStatus: 'needs-review' } : undefined,
@@ -651,17 +677,20 @@ export function directorDependencyNames(): string[] {
   return ['canonical-transcript', 'director-policy', 'provider-model-config', 'prompt-schema', 'sermon-analysis', 'visual-intensity-map', 'beatmap', 'edit-plan', 'render'];
 }
 
-export function semanticAnalysisPromptFor(input: DirectorInput): string {
+export function semanticAnalysisPromptFor(input: DirectorInput, refinementReason?: string): string {
   const indices = primarySegmentIndices(input);
   return [
     'You are a reverent Bengali sermon semantic extractor.',
     'Return only one JSON object. Do not include markdown, prose, timestamps, project IDs, or source IDs.',
     'Use inclusive numbered transcript segment ranges. The application resolves identity and timing.',
     'Your ONLY job is to classify the semantic nature of the content.',
-    'If a section serves multiple purposes (e.g. a story that teaches a point), provide both a sectionType (primary) and a secondaryType.',
-    'Provide semanticEvidence referencing the transcript structure. Do not expose chain-of-thought.',
+    'CRITICAL: Differentiate the OVERALL STORY ARC from INTERNAL EDITORIAL BEATS.',
+    'A 40-70 second narrative may have an overallSemanticRole of "story", but it MUST be broken into multiple semantic sections when meaning changes.',
+    'Create boundaries when there is a: topic change, problem introduced, conflict, turning point, main point declared, rhetorical question, application, scripture, or prayer.',
+    'Do NOT force the entire transcript into one giant section. Meaning determines boundaries.',
+    'If a section serves multiple purposes, provide both a sectionType (primary) and a secondaryType.',
     'Allowed sectionType and secondaryType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
-    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startIndex":0,"endIndex":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative of Paul in Rome"}],"overallConfidence":0.0}.',
+    refinementReason ? `REFINEMENT REQUEST: ${refinementReason}` : '',
     'Do not omit required fields.',
     ...coverageRules,
     `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
@@ -682,6 +711,7 @@ export function visualDecisionPromptFor(input: DirectorInput, semantics: SermonA
       suggestedDisplayText: "optional Bengali label",
       scriptureReference: "optional",
       visualRecommendation: "image-broll",
+      brollIntent: { subject: "king", action: "fleeing", setting: "ancient city", mood: "desperate", visualPurpose: "illustrate story", exclusions: ["modern city"] },
       confidence: 0.9,
       reason: "Your rationale here"
     };
@@ -692,6 +722,8 @@ export function visualDecisionPromptFor(input: DirectorInput, semantics: SermonA
     'CRITICAL: You MUST output exactly the same number of sections as provided, and you MUST copy the exact startIndex and endIndex for each section from the input below.',
     'Do NOT change startIndex, endIndex, sectionType, or secondaryType.',
     'CRITICAL INSTRUCTION: startIndex and endIndex are integer array indices. Do NOT output timestamps.',
+    'For any image-broll or video-broll recommendation, you MUST provide a detailed brollIntent.',
+    'The brollIntent exclusions array MUST contain things that would be factually incorrect for the text (e.g. "Peter in prison" if the story is about a king and a famine).',
     'For each section, determine the visualRecommendation and intensity.',
     'Respect that prayer, Scripture, altar call, and emotional ministry often need speaker-full or none.',
     'Reverent Retention does not mean visual inactivity. For ordinary teaching, stories, questions, and emphasis, consider restrained captions, sermon points, punch-ins, reframes, Scripture treatments, contextual B-roll, or an intentional visual reset when semantically useful.',
@@ -748,4 +780,40 @@ export function evaluateSemanticStability(runA: { type: string, secondaryType?: 
   if (!aHasNarrative && !bHasNarrative && aRoles.some(r => bRoles.includes(r!))) return 'COMPATIBLE_VARIATION';
   
   return 'UNSTABLE';
+}
+
+
+export interface SegmentationDiagnostics {
+  sectionCount: number;
+  eligibleSectionCount: number;
+  averageSectionDuration: number;
+  longestSectionDuration: number;
+  singleSectionTimeline: boolean;
+  coarseSegmentationRisk: 'NORMAL' | 'COARSE' | 'EXTREMELY_COARSE';
+}
+
+export function detectCoarseSegmentation(analysis: SermonAnalysis, transcriptDuration: number): SegmentationDiagnostics {
+  const sectionCount = analysis.sections.length;
+  const eligibleSections = analysis.sections.filter(s => s.type !== 'prayer' && s.type !== 'scripture-reading');
+  const eligibleSectionCount = eligibleSections.length;
+  const totalDuration = analysis.sections.reduce((acc, s) => acc + (s.end - s.start), 0);
+  const averageSectionDuration = sectionCount > 0 ? totalDuration / sectionCount : 0;
+  const longestSectionDuration = Math.max(0, ...analysis.sections.map(s => s.end - s.start));
+  const singleSectionTimeline = sectionCount === 1;
+
+  let coarseSegmentationRisk: 'NORMAL' | 'COARSE' | 'EXTREMELY_COARSE' = 'NORMAL';
+  if (singleSectionTimeline && transcriptDuration > 30) {
+    coarseSegmentationRisk = 'EXTREMELY_COARSE';
+  } else if (longestSectionDuration > 40 && eligibleSectionCount < 3) {
+    coarseSegmentationRisk = 'COARSE';
+  }
+
+  return {
+    sectionCount,
+    eligibleSectionCount,
+    averageSectionDuration,
+    longestSectionDuration,
+    singleSectionTimeline,
+    coarseSegmentationRisk
+  };
 }

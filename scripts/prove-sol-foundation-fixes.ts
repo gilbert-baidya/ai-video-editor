@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     assert.equal(versionChanged.cache.reused, 0);
     const selected = decideBroll(versionChanged.index, intent);
     assert.equal(selected.decision, 'selected');
-    assert.ok(rankMediaCandidates(versionChanged.index, intent.search!)[0].semanticScore > 0);
+    assert.ok(rankMediaCandidates(versionChanged.index, intent.search!, undefined)[0].semanticScore > 0);
     const multilingualIndex = {
       ...versionChanged.index,
       assets: versionChanged.index.assets.map((asset) => ({
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
       })),
     };
     const englishIntent = { ...intent.search!, concept: 'scripture', semanticTags: ['scripture'] };
-    assert.ok(rankMediaCandidates(multilingualIndex, englishIntent)[0].semanticScore > 0);
+    assert.ok(rankMediaCandidates(multilingualIndex, englishIntent, undefined)[0].semanticScore > 0);
     assert.ok(versionChanged.index.assets[0].tags.includes('বাইবেল'));
     assert.ok(versionChanged.index.assets[0].searchTerms.includes('বাইবেল'));
     const banglaConcepts = ['প্রার্থনা', 'বাইবেল', 'বিশ্বাস', 'বাংলাদেশ', 'পরিবার', 'গির্জা', 'উপাসনা', 'প্রকৃতি', 'মিশন', 'অনুগ্রহ'];

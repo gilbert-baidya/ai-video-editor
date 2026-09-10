@@ -1,6 +1,9 @@
 import type {
+  AIBrollIntent,
+  AssetRelevance,
   BrollDecision,
   BrollIntent,
+  MediaAsset,
   MediaCandidate,
   MediaIndex,
   MediaSearchIntent,
@@ -58,41 +61,79 @@ export function buildBrollIntents(analysis: SermonAnalysis): BrollIntent[] {
     if (!SEARCH_TYPES.has(section.type) && section.visualRecommendation !== 'image-broll' && section.visualRecommendation !== 'video-broll') {
       return { sectionId: section.id, start: section.start, end: section.end, decision: 'no-broll', reason: 'This section does not contain a concrete visual illustration that warrants local media.' };
     }
-    return { sectionId: section.id, start: section.start, end: section.end, decision: 'search', reason: 'A concrete story or illustration may benefit from one calm local visual.', search: createSearchIntent(section) };
+    return { sectionId: section.id, start: section.start, end: section.end, decision: 'search', reason: 'A concrete story or illustration may benefit from one calm local visual.', search: createSearchIntent(section), aiIntent: section.brollIntent };
   });
 }
 
-function scoreCandidate(index: MediaIndex, intent: MediaSearchIntent, assetId: string, history: MediaUsageHistory[]): MediaCandidate {
+
+export function evaluateAssetRelevance(aiIntent: AIBrollIntent | undefined, asset: MediaAsset): AssetRelevance {
+  if (!aiIntent) return 'MEDIUM';
+  
+  const searchable = [
+    asset.fileName,
+    asset.relativePath,
+    ...(asset.tags || []),
+    ...(asset.categories || []),
+    asset.description || '',
+    ...(asset.searchTerms || [])
+  ].join(' ').toLowerCase();
+
+  for (const exclusion of aiIntent.exclusions || []) {
+    const exTerms = terms(exclusion);
+    if (exTerms.length > 0 && exTerms.every(t => searchable.includes(t))) {
+      return 'MISMATCH';
+    }
+  }
+
+  const intentTerms = expandedTerms([aiIntent.subject, aiIntent.action, aiIntent.setting]);
+  let matches = 0;
+  for (const term of intentTerms) {
+    if (searchable.includes(term)) matches++;
+  }
+
+  if (matches >= Math.min(2, intentTerms.size) && intentTerms.size > 0) return 'HIGH';
+  if (matches > 0) return 'MEDIUM';
+  return 'LOW';
+}
+
+function scoreCandidate(index: MediaIndex, searchIntent: MediaSearchIntent, aiIntent: AIBrollIntent | undefined, assetId: string, history: MediaUsageHistory[]): MediaCandidate {
   const asset = index.assets.find((item) => item.id === assetId);
   if (!asset) return { assetId, score: 0, semanticScore: 0, categoryScore: 0, technicalScore: 0, rightsScore: 0, repetitionPenalty: 0, reasons: ['Asset is missing from the current index.'], eligible: false };
-  const wanted = expandedTerms([intent.concept, ...intent.semanticTags]);
+  const wanted = expandedTerms([searchIntent.concept, ...searchIntent.semanticTags]);
   const searchable = expandedTerms([asset.fileName, asset.relativePath, ...asset.tags, ...asset.categories, asset.description ?? '', ...asset.searchTerms]);
   const matches = [...wanted].filter((term) => searchable.has(term));
   const semanticScore = Math.min(1, matches.length / Math.max(1, Math.min(8, wanted.size)));
-  const categoryScore = Math.min(1, (intent.preferredCategories ?? []).filter((category) => asset.categories.includes(category)).length / Math.max(1, (intent.preferredCategories ?? []).length));
-  const technicalScore = asset.usable && asset.width >= 640 && asset.height >= 360 ? (intent.desiredMedia === 'either' || asset.kind === intent.desiredMedia ? 1 : 0.35) : 0;
+  const categoryScore = Math.min(1, (searchIntent.preferredCategories ?? []).filter((category) => asset.categories.includes(category)).length / Math.max(1, (searchIntent.preferredCategories ?? []).length));
+  const technicalScore = asset.usable && asset.width >= 640 && asset.height >= 360 ? (searchIntent.desiredMedia === 'either' || asset.kind === searchIntent.desiredMedia ? 1 : 0.35) : 0;
   const rightsScore = rightsAllowsAutomation(asset.rightsStatus) ? 1 : 0;
   const repetitionPenalty = history.some((item) => item.assetId === asset.id) ? 0.35 : 0;
   const score = Math.max(0, semanticScore * 0.5 + categoryScore * 0.2 + technicalScore * 0.15 + rightsScore * 0.15 - repetitionPenalty);
   const reasons = [
     matches.length ? `Matched semantic terms: ${matches.slice(0, 5).join(', ')}.` : 'No semantic metadata match.',
-    categoryScore ? `Preferred category match: ${(intent.preferredCategories ?? []).filter((category) => asset.categories.includes(category)).join(', ')}.` : 'No preferred category match.',
-    technicalScore === 1 ? 'Technical dimensions and requested media type are compatible.' : technicalScore > 0 ? `Technical dimensions are renderable, but the asset is ${asset.kind} and the intent requested ${intent.desiredMedia}.` : 'Technical dimensions are not renderable.',
+    categoryScore ? `Preferred category match: ${(searchIntent.preferredCategories ?? []).filter((category) => asset.categories.includes(category)).join(', ')}.` : 'No preferred category match.',
+    technicalScore === 1 ? 'Technical dimensions and requested media type are compatible.' : technicalScore > 0 ? `Technical dimensions are renderable, but the asset is ${asset.kind} and the intent requested ${searchIntent.desiredMedia}.` : 'Technical dimensions are not renderable.',
     rightsScore ? `Rights status ${asset.rightsStatus} permits automation.` : `Rights status ${asset.rightsStatus} requires review.`,
   ];
   if (repetitionPenalty) reasons.push('Previously used in this usage history.');
-  return { assetId, score, semanticScore, categoryScore, technicalScore, rightsScore, repetitionPenalty, reasons, eligible: asset.usable && rightsScore > 0 && score >= 0.55 };
+  const relevance = evaluateAssetRelevance(aiIntent, asset);
+  if (relevance === 'MISMATCH' || relevance === 'LOW') {
+    reasons.push(`AI Intent Relevance: ${relevance}. Asset is blocked from auto-use.`);
+  } else {
+    reasons.push(`AI Intent Relevance: ${relevance}.`);
+  }
+  const eligible = asset.usable && rightsScore > 0 && score >= 0.55 && relevance !== 'MISMATCH' && relevance !== 'LOW';
+  return { assetId, score, semanticScore, categoryScore, technicalScore, rightsScore, repetitionPenalty, reasons, eligible, relevance };
 }
 
-export function rankMediaCandidates(index: MediaIndex, intent: MediaSearchIntent, history: MediaUsageHistory[] = []): MediaCandidate[] {
+export function rankMediaCandidates(index: MediaIndex, searchIntent: MediaSearchIntent, aiIntent: AIBrollIntent | undefined, history: MediaUsageHistory[] = []): MediaCandidate[] {
   return index.assets
-    .map((asset) => scoreCandidate(index, intent, asset.id, history))
+    .map((asset) => scoreCandidate(index, searchIntent, aiIntent, asset.id, history))
     .sort((left, right) => right.score - left.score);
 }
 
 export function decideBroll(index: MediaIndex, intent: BrollIntent, history: MediaUsageHistory[] = []): BrollDecision {
   if (intent.decision === 'no-broll' || !intent.search) return { intent, candidates: [], decision: 'no-broll', reason: intent.reason };
-  const candidates = rankMediaCandidates(index, intent.search, history);
+  const candidates = rankMediaCandidates(index, intent.search, intent.aiIntent, history);
   const selected = candidates.find((candidate) => candidate.eligible);
   if (!selected) return { intent, candidates, decision: 'no-suitable-asset', reason: 'No local asset met semantic relevance, technical, rights, and reuse thresholds.' };
   return { intent, candidates, selectedAssetId: selected.assetId, decision: 'selected', reason: selected.reasons.join(' ') };
