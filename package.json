@@ -30,7 +30,8 @@
     "dev:product": "tsx src/product-server.ts",
     "prove-sol-foundation-fixes": "tsx scripts/prove-sol-foundation-fixes.ts",
     "test-tokenization": "tsx scripts/test-tokenization.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test-story-treatment-v1-3-3": "tsx scripts/test-story-treatment-v1-3-3.ts"
   },
   "dependencies": {
     "@remotion/bundler": "^4.0.0",

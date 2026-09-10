@@ -6,7 +6,9 @@ export type TranscriptTextSource = 'local-asr' | 'existing-project' | 'manual' |
 export type TimingConfidence = 'word-safe' | 'sentence-safe' | 'segment-safe' | 'review';
 export type VisualIntensity = 'reverent-calm' | 'normal-teaching' | 'story-illustration' | 'emphasis';
 export type VisualRecommendation = 'speaker-full' | 'speaker-left' | 'speaker-right' | 'speaker-punch-in' | 'caption' | 'scripture-card' | 'title-card' | 'keyword-graphic' | 'image-broll' | 'video-broll' | 'motion-graphic' | 'split-screen' | 'none';
+export type EditorialIntent = 'PRESERVE_SPEAKER' | 'EMPHASIZE_SPEAKER' | 'SHOW_KEY_TEXT' | 'SHOW_SCRIPTURE' | 'USE_CONTEXTUAL_VISUAL' | 'VISUAL_RESET';
 export type DisplayTextTrust = 'canonical-transcript' | 'ai-suggested-unapproved' | 'approved-display' | 'scripture-reference-needs-review' | 'verified-scripture';
+
 
 export type SermonSectionType = 'introduction' | 'scripture-reading' | 'teaching' | 'main-point' | 'illustration' | 'story' | 'testimony' | 'question' | 'application' | 'transition' | 'prayer' | 'emotional-ministry' | 'conclusion' | 'altar-call';
 
@@ -29,6 +31,7 @@ export interface SermonSection {
   intensity?: VisualIntensity;
   suggestedDisplayText?: string;
   scriptureReference?: string;
+  editorialIntent?: EditorialIntent;
   visualRecommendation?: VisualRecommendation;
   confidence: number;
   reason: string;

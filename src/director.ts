@@ -286,10 +286,15 @@ export function promptFor(input: DirectorInput): string {
     'Stories and illustrations: actively consider contextual B-roll first; when B-roll is not semantically justified, consider a caption, punch-in, or reframe.',
     'Strong emphasis: consider a key phrase, punch-in, or visual reset.',
     'No Change is deliberate, not the safest default. For eligible normal teaching/story/emphasis sections, explain why No Change is better than the available restrained alternatives.',
+    'Your editorialIntent, visualRecommendation, and reason MUST logically agree.',
+    'If your rationale says contextual B-roll is appropriate, then choose image-broll unless you explicitly justify why remaining on the speaker is better.',
+    'If you select speaker-full or none for a HIGH-opportunity story, provide a specific deliberate-speaker-led justification.',
+    'Do not describe one visual treatment in `reason` and select an unrelated visualRecommendation.',
     'Allowed sectionType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
     'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
+    'Allowed editorialIntent: PRESERVE_SPEAKER, EMPHASIZE_SPEAKER, SHOW_KEY_TEXT, SHOW_SCRIPTURE, USE_CONTEXTUAL_VISUAL, VISUAL_RESET.',
     'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
-    'JSON shape: {"sections":[{"sectionType":"main-point","startSegment":0,"endSegment":0,"intensity":"emphasis","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    'JSON shape: {"sections":[{"sectionType":"main-point","startSegment":0,"endSegment":0,"intensity":"emphasis","editorialIntent":"SHOW_KEY_TEXT","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"keyword-graphic","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     'Do not omit required fields.',
     ...coverageRules,
     `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
@@ -303,22 +308,28 @@ export function coverageRepairPromptFor(input: DirectorInput, missingIndices: nu
     'Return only one JSON object using the same schema as before.',
     'Return sections ONLY for the uncovered primary segment indices listed below. Do not repeat already covered segments.',
     'Every listed index must appear in exactly one returned section.',
-    'If a segment needs no visual intervention, return it with visualRecommendation "speaker-full" or "none".',
-    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
+    'If a segment needs no visual intervention, return it with visualRecommendation "speaker-full" or "none" and intent "PRESERVE_SPEAKER".',
+    'JSON shape: {"sections":[{"sectionType":"teaching","startSegment":0,"endSegment":0,"intensity":"normal-teaching","editorialIntent":"PRESERVE_SPEAKER","visualRecommendation":"speaker-full","confidence":0.0,"reason":"required"}],"overallConfidence":0.0}.',
     `Uncovered primary segment indices: ${missingIndices.join(', ')}.`,
     `Numbered transcript segments (full context):\n${numberedSegments(input)}`,
   ].join('\n');
 }
 
 export function editorialEnrichmentPromptFor(request: DirectorEditorialEnrichmentRequest): string {
-  const eligible = request.opportunities.map((item) => ({
-    sectionId: item.sectionId,
-    semanticType: item.semanticType,
-    intensity: item.intensity,
-    visualOpportunity: item.visualOpportunity,
-    eligibleVisualTypes: item.eligibleVisualTypes,
-    reason: item.reason,
-  }));
+  const eligible = request.opportunities.map((item) => {
+    const section = request.currentAnalysis.sections.find(s => s.id === item.sectionId);
+    return {
+      sectionId: item.sectionId,
+      semanticType: item.semanticType,
+      intensity: item.intensity,
+      visualOpportunity: item.visualOpportunity,
+      eligibleVisualTypes: item.eligibleVisualTypes,
+      currentRecommendation: item.currentRecommendation,
+      editorialIntent: section?.editorialIntent,
+      structuredReason: item.reason,
+      problemClassification: 'UNTREATED_OR_INCONSISTENT',
+    };
+  });
   return [
     'You are performing one bounded editorial enrichment pass for a reverent Bengali sermon edit.',
     'Return only one JSON object using the established Director schema. Return revised decisions only for the requested weak primary segments.',

@@ -87,7 +87,7 @@ export async function runBoundedEditorialEnrichment(
   maxAttempts = 1,
 ): Promise<DirectorEditorialEnrichmentResult> {
   const initialQuality = evaluateDirectorQuality(initialAnalysis);
-  if (initialQuality.status !== 'LOW-ACTIVITY') {
+  if (initialQuality.enrichmentTriggerReasons.length === 0) {
     return { analysis: initialAnalysis, initialQuality, quality: initialQuality, enrichmentTriggered: false, enrichmentAttemptCount: 0, outcome: 'not-needed' };
   }
   const opportunities = enrichmentOpportunities(initialAnalysis);
@@ -95,7 +95,7 @@ export async function runBoundedEditorialEnrichment(
     return {
       analysis: initialAnalysis,
       initialQuality,
-      quality: { ...initialQuality, enrichmentTriggered: true },
+      quality: { ...initialQuality, enrichmentTriggered: true, enrichmentTriggerReasons: initialQuality.enrichmentTriggerReasons },
       enrichmentTriggered: true,
       enrichmentAttemptCount: 0,
       outcome: 'unavailable',
@@ -119,14 +119,14 @@ export async function runBoundedEditorialEnrichment(
     }
     const analysis = mergeEditorialEnrichment(transcript, initialAnalysis, providerResult.analysis, opportunities);
     const enrichmentAttemptCount = providerResult.attempts.length;
-    const quality = evaluateDirectorQuality(analysis, { enrichmentTriggered: true, enrichmentAttemptCount });
+    const quality = evaluateDirectorQuality(analysis, { enrichmentTriggered: true, enrichmentAttemptCount, enrichmentTriggerReasons: initialQuality.enrichmentTriggerReasons });
     return { analysis, initialQuality, quality, enrichmentTriggered: true, enrichmentAttemptCount, providerResult, outcome: 'succeeded' };
   } catch (error) {
     const enrichmentAttemptCount = providerResult?.attempts.length ?? 1;
     return {
       analysis: initialAnalysis,
       initialQuality,
-      quality: { ...initialQuality, enrichmentTriggered: true, enrichmentAttemptCount },
+      quality: { ...initialQuality, enrichmentTriggered: true, enrichmentAttemptCount, enrichmentTriggerReasons: initialQuality.enrichmentTriggerReasons },
       enrichmentTriggered: true,
       enrichmentAttemptCount,
       providerResult,

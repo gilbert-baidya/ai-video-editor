@@ -159,7 +159,7 @@ export const DirectorReviewWorkspace: React.FC<{
       <Metric label="Reframes" value={String(editorial.reframes)} />
       <Metric label="Captions" value={String(editorial.captions)} />
       <Metric label="Director quality" value={directorQuality?.status ?? 'NOT SCORED'} tone={directorQuality?.status === 'LOW-ACTIVITY' ? 'gold' : 'green'} />
-      <Metric label="Story untreated" value={String(directorQuality?.storySectionsWithoutTreatment ?? 0)} tone={directorQuality?.storySectionsWithoutTreatment ? 'gold' : undefined} />
+      <Metric label="Story untreated" value={String(directorQuality?.untreatedStorySections ?? 0)} tone={directorQuality?.untreatedStorySections ? 'gold' : undefined} />
       <Metric
         label="Enrichment"
         value={enrichment ? `${enrichment.outcome.toUpperCase()} · ${enrichment.enrichmentAttemptCount}` : directorQuality?.enrichmentTriggered ? 'REQUIRED · UNAVAILABLE' : 'NOT NEEDED'}

@@ -117,7 +117,7 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
         options.cacheRoot,
         'director-analysis',
         { inputHash, providerIdentity, fallbackIdentity: fallback.cacheIdentity, coverageContract: DIRECTOR_COVERAGE_CONTRACT_VERSION, maxCoverageRepairAttempts: String(options.maxCoverageRepairAttempts ?? 1) },
-        'v1.2',
+        'v1.3.3',
         execute,
         (value) => value.provenance.providerStatus !== 'UNAVAILABLE' && value.provenance.providerStatus !== 'FAILED',
       )
@@ -146,7 +146,7 @@ export async function runFullSermonDirector(transcript: TranscriptDocument, opti
       options.cacheRoot,
       'director-editorial-enrichment',
       { transcriptHash, enrichmentInputHash },
-      'v1.3.2',
+      'v1.3.3',
       () => runBoundedEditorialEnrichment(transcript, reconciliationStage.value.analysis, enrichmentProvider, 1),
       (value) => !value.error,
     )

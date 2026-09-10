@@ -14,7 +14,7 @@ async function executable(candidates: string[], versionArgs = ['-version']): Pro
     const result = await new Promise<{ ok: boolean; output: string }>((done) => {
       const child = spawn(path, versionArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
-      const timeout = setTimeout(() => child.kill('SIGTERM'), 3_000);
+      const timeout = setTimeout(() => child.kill('SIGTERM'), 60_000);
       child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
       child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
       child.once('error', () => { clearTimeout(timeout); done({ ok: false, output: '' }); });
