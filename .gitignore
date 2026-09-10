@@ -30,3 +30,6 @@ tmp/
 temp/
 .runtime/
 public/.product-runtime/
+
+.env.local
+.env

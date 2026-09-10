@@ -248,7 +248,7 @@ try {
     node: { state: 'AVAILABLE', detail: 'fixture' },
     ffmpeg: { state: 'UNAVAILABLE', detail: 'fixture' },
     ffprobe: { state: 'UNAVAILABLE', detail: 'fixture' },
-    director: { state: 'UNAVAILABLE', detail: 'fixture' },
+    director: { state: 'UNAVAILABLE', detail: 'fixture', provider: 'mock', model: 'mock', geminiAvailable: false, ollamaAvailable: false },
     transcription: { state: 'NOT_CONFIGURED', detail: 'fixture' },
     youtube: { state: 'UNAVAILABLE', detail: 'fixture' },
     render: { state: 'UNAVAILABLE', detail: 'fixture' },

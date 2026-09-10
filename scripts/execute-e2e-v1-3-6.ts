@@ -23,8 +23,7 @@ async function main() {
   for (let attempt = 1; attempt <= 5; attempt++) {
     const project = await orchestrator.createProject({
       title: `V1.3.6 Gemini Primary E2E Attempt ${attempt}`,
-      source: { type: 'youtube-url', url: 'https://youtube.com/shorts/lPN9AWaTuEc', ingestionAvailable: true },
-    format: { orientation: 'portrait' }
+      source: { type: 'youtube-url', url: 'https://youtube.com/shorts/lPN9AWaTuEc', ingestionAvailable: true }
     });
     projectId = project.workflow.projectId;
     console.log(`\nAttempt ${attempt} Project ID: ${projectId}`);
@@ -50,9 +49,7 @@ async function main() {
     proj.workflow.stages.ingest.status = 'completed';
     proj.workflow.stages.transcript.status = 'completed';
     proj.artifacts.transcript = 'artifacts/transcript.json';
-    proj.artifacts.audio = baselineProj.artifacts.audio;
-    proj.artifacts.video = baselineProj.artifacts.video;
-    proj.sourceMetadata = baselineProj.sourceMetadata;
+            proj.sourceMetadata = baselineProj.sourceMetadata;
     await store.save(proj);
 
 

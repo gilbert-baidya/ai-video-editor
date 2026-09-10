@@ -20,7 +20,7 @@ const capabilities: ProductCapabilities = {
   node: { state: 'AVAILABLE', detail: 'test' },
   ffmpeg: { state: 'AVAILABLE', detail: '/test/ffmpeg is available.' },
   ffprobe: { state: 'UNAVAILABLE', detail: 'fixture deliberately unavailable' },
-  director: { state: 'AVAILABLE', detail: 'mock provider available' },
+  director: { state: 'AVAILABLE', detail: 'mock provider available', provider: 'mock', model: 'mock', geminiAvailable: true, ollamaAvailable: false },
   transcription: { state: 'AVAILABLE', detail: 'mock transcription available' },
   youtube: { state: 'UNAVAILABLE', detail: 'yt-dlp is unavailable in the office fixture' },
   render: { state: 'AVAILABLE', detail: 'mock renderer available' },

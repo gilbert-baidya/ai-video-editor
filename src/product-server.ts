@@ -10,8 +10,10 @@ import { createRemotionRenderAdapter } from './product-renderer.ts';
 import { ProductProjectStore, assertWithinRoot } from './product-store.ts';
 import { streamUpload } from './source-ingestion.ts';
 import { parseProjectApiRoute } from './product-http.ts';
+import { loadEnv } from './env.ts';
 
 const appRoot = resolve(import.meta.dirname, '..');
+loadEnv(appRoot);
 const runtimeRoot = resolve(appRoot, '.runtime', 'projects');
 const store = new ProductProjectStore(runtimeRoot);
 const orchestrator = new ProductOrchestrator(store, appRoot, { render: createRemotionRenderAdapter(appRoot) });

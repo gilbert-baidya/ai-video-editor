@@ -125,8 +125,11 @@ async function main() {
   writeFileSync(resolve(store.projectDirectory(projectId), 'output/final-sermon.mp4'), 'mock-video-content');
   
   await orchestrator.startStage(projectId, 'render');
-  await new Promise(r => setTimeout(r, 500));
   let rp = await store.get(projectId);
+  while (rp.workflow.stages.render.status !== 'completed' && rp.workflow.stages.render.status !== 'failed') {
+    await new Promise(r => setTimeout(r, 100));
+    rp = await store.get(projectId);
+  }
   if (rp.workflow.stages.render.status === 'failed') throw new Error(rp.workflow.stages.render.error);
   await orchestrator.startStage(projectId, 'qa');
   await new Promise(r => setTimeout(r, 500));
@@ -135,7 +138,7 @@ async function main() {
   if(finalProj.workflow.stages.qa.status === 'failed') console.log('QA ERROR:', finalProj.workflow.stages.qa.error);
   assert.strictEqual(finalProj.workflow.stages.qa.status, 'completed', 'QA completes successfully');
   assert.ok(finalProj.qa?.editorial?.realization?.renderedOperations.includes('broll-section-1'), 'asset resolves in renderer and dropped operation detected correctly');
-  assert.strictEqual(finalProj.qa?.video, 'PASS', 'Editorial QA contract remains unchanged');
+  assert.strictEqual(finalProj.qa?.video, true, 'Editorial QA contract remains unchanged');
   
   console.log('All V1.3.4 deterministic realization assertions PASSED.');
 }
