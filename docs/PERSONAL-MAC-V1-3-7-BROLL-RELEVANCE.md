@@ -5,7 +5,7 @@ Previously, the visual director produced localized B-roll requests (e.g. "ancien
 
 ## Implementation
 1. **B-Roll Intent Schema:** Implemented `AIBrollIntent` mapped directly to Gemini's output containing rigorous definitions of the desired B-roll context, including explicit `exclusions`.
-2. **Relevance Validation:** Created deterministic checks (`evaluateAssetRelevance`) scoring assets as `HIGH`, `MEDIUM`, `LOW`, or `MISMATCH`.
+2. **Relevance Validation:** Created deterministic checks (`evaluateAssetRelevance`) scoring assets as `HIGH`, `MEDIUM`, `LOW`, or `MISMATCH`. Checked using `searchable.includes()`, which relies purely on deterministic lexical/keyword matching. **Note:** This is a deterministic string match limitation and does not constitute genuine abstract semantic understanding.
 3. **Hard Rejection:** Configured `LOW` and `MISMATCH` intent scores to strictly enforce `eligible: false`, explicitly blocking them from entering the Approved Edit Plan without explicit human workspace intervention.
 
 ## Benchmark Results
@@ -14,4 +14,12 @@ Previously, the visual director produced localized B-roll requests (e.g. "ancien
 - **Positive Testing:** The newly generated target asset `ancient_king_famine` successfully achieved `HIGH` semantic matching, resolving into an eligible renderer candidate.
 
 ## Conclusion
-B-Roll Relevance: **GO**
+
+Existing canonical transcript reused.
+
+DETERMINISTIC TESTS: PASS
+GEMINI SEMANTIC BENCHMARK: PASS
+PRODUCT-PATH EXECUTION: PASS
+B-ROLL REALIZATION: PASS
+AUTOMATED EDITORIAL QUALITY: NO-GO
+HUMAN VIEWER: NOT READY

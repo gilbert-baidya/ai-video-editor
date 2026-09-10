@@ -802,9 +802,13 @@ export function detectCoarseSegmentation(analysis: SermonAnalysis, transcriptDur
   const singleSectionTimeline = sectionCount === 1;
 
   let coarseSegmentationRisk: 'NORMAL' | 'COARSE' | 'EXTREMELY_COARSE' = 'NORMAL';
+  
+  const functionDiversity = new Set(eligibleSections.map(s => s.semanticFunction)).size;
+  const proportionLongest = transcriptDuration > 0 ? longestSectionDuration / transcriptDuration : 0;
+  
   if (singleSectionTimeline && transcriptDuration > 30) {
     coarseSegmentationRisk = 'EXTREMELY_COARSE';
-  } else if (longestSectionDuration > 40 && eligibleSectionCount < 3) {
+  } else if (proportionLongest > 0.6 && functionDiversity < 2 && transcriptDuration > 45) {
     coarseSegmentationRisk = 'COARSE';
   }
 

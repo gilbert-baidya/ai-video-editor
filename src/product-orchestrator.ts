@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { basename, resolve } from 'node:path';
 import type { EditPlan, TranscriptDocument } from './contracts.ts';
-import { OllamaDirectorProvider } from './director.ts';
+import { OllamaDirectorProvider, DirectorProvider } from './director.ts';
 import { GeminiDirectorProvider } from './director-gemini.ts';
 import { runFullSermonDirector } from './full-sermon-director.ts';
 import { extractAudio, transcribeAndAlign } from './foundation.ts';
@@ -97,14 +97,15 @@ async function downloadYouTube(url: string, outputDirectory: string, capabilitie
 
 export class ProductOrchestrator {
   private readonly running = new Map<string, Promise<void>>();
-  private readonly directorProvider = new GeminiDirectorProvider();
-  private readonly directorFallback = new OllamaDirectorProvider();
+  private readonly directorProvider: DirectorProvider;
 
   constructor(
     readonly store: ProductProjectStore,
     readonly appRoot: string,
     private readonly adapters: ProductStageAdapters = {},
-  ) {}
+  ) {
+    this.directorProvider = process.env.AI_DIRECTOR_PROVIDER === 'ollama' ? new OllamaDirectorProvider() : new GeminiDirectorProvider();
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
@@ -278,7 +279,7 @@ export class ProductOrchestrator {
   }
 
   private async defaultAnalyze(transcript: TranscriptDocument, cacheRoot: string) {
-    const result = await runFullSermonDirector(transcript, { provider: this.directorProvider, fallback: this.directorFallback, cacheRoot });
+    const result = await runFullSermonDirector(transcript, { provider: this.directorProvider, cacheRoot });
     const analysis = result.reconciliation.analysis;
     const duration = transcript.segments.at(-1)?.end ?? 0;
     const policy = applyRetentionPolicy(analysis, transcript.projectId, canonicalTranscriptHash(transcript), duration);

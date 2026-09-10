@@ -38,7 +38,7 @@ async function run() {
   assert.equal(parsed.sections[1].boundaryReason, 'conflict introduced', 'Boundary reason preserved');
 
   console.log('Testing coarse segmentation detection...');
-  const fakeAnalysisSingle = {
+  const fakeAnalysisSingle = { stories: [], testimonies: [], questions: [], applications: [], prayers: [], transitions: [], scriptures: [], topics: [], speakerChanges: [],
     version: '1.0',
     projectId: 'test',
     supportingPassages: [],
@@ -49,7 +49,8 @@ async function run() {
       { id: '1', start: 0, end: 72, transcriptText: '', sourceSegmentIds: [], type: 'story' as const, confidence: 1 }
     ]
   };
-  const coarseDiag = detectCoarseSegmentation(fakeAnalysisSingle, 72);
+  // @ts-ignore
+  const coarseDiag = detectCoarseSegmentation(fakeAnalysisSingle as unknown as SermonAnalysis, 72);
   assert.equal(coarseDiag.coarseSegmentationRisk, 'EXTREMELY_COARSE', 'Single giant section detected as EXTREMELY_COARSE');
 
   const fakeAnalysisMultiple = {
@@ -60,11 +61,12 @@ async function run() {
       { id: '3', start: 50, end: 72, transcriptText: '', sourceSegmentIds: [], type: 'application' as const, confidence: 1 }
     ]
   };
-  const normalDiag = detectCoarseSegmentation(fakeAnalysisMultiple, 72);
+  // @ts-ignore
+  const normalDiag = detectCoarseSegmentation(fakeAnalysisMultiple as unknown as SermonAnalysis, 72);
   assert.equal(normalDiag.coarseSegmentationRisk, 'NORMAL', 'Multiple sections detected as NORMAL');
 
   console.log('Testing B-roll asset relevance matching...');
-  const peterAsset: MediaAsset = {
+  const peterAsset: any = { path: "peter.jpg", mimeType: "image/jpeg", sizeBytes: 1024, modifiedAt: new Date().toISOString(), root: "approved",
     id: 'peter-prison',
     relativePath: 'peter.jpg',
     fileName: 'peter.jpg',
