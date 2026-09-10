@@ -526,7 +526,7 @@ async function main(): Promise<void> {
     categories: ['illustration'],
     searchTerms: ['story'],
     rightsStatus: 'unknown',
-    rightsSource: 'library-root-default',
+    rightsBasis: 'owned',
     libraryRootId: 'fixture',
     libraryPolicyVersion: '1',
     usable: true,

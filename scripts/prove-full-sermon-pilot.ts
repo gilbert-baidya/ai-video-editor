@@ -48,7 +48,7 @@ const previewDuration = preview.sourceEnd - preview.sourceStart;
 const cacheOnly = process.env.PILOT_CACHE_ONLY === '1';
 
 function rights(value: string | undefined): MediaLibraryRoot['defaultRightsStatus'] {
-  return value === 'owned' || value === 'approved' ? value : 'unknown';
+  return value === 'approved' ? value : 'unknown';
 }
 
 const configuredProofRights = rights(process.env.V4_MEDIA_RIGHTS ?? process.env.V4_PROOF_MEDIA_RIGHTS);

@@ -30,8 +30,13 @@ export interface DirectorInput {
 
 export interface AISermonSection {
   sectionType: SermonSectionType;
+  secondaryType?: SermonSectionType;
+  semanticConfidence?: number;
+  semanticEvidence?: string;
+  
   startSegment: number;
   endSegment: number;
+  
   intensity: VisualIntensity;
   suggestedDisplayText?: string;
   scriptureReference?: string;
@@ -143,26 +148,32 @@ export function validateAIResponse(value: unknown, segmentCount: number): AISerm
   const sections = root.sections.map((candidate, index) => {
     const item = objectValue(candidate, `sections[${index}]`);
     const sectionType = stringValue(item.sectionType, `sections[${index}].sectionType`) as SermonSectionType;
-    const intensity = stringValue(item.intensity, `sections[${index}].intensity`) as VisualIntensity;
-    const visualRecommendation = stringValue(item.visualRecommendation, `sections[${index}].visualRecommendation`) as VisualRecommendation;
+    const intensity = (item.intensity ? stringValue(item.intensity, `sections[${index}].intensity`) : 'normal-teaching') as VisualIntensity;
+    const visualRecommendation = (item.visualRecommendation ? stringValue(item.visualRecommendation, `sections[${index}].visualRecommendation`) : 'speaker-full') as VisualRecommendation;
     if (!sectionTypes.has(sectionType)) throw new Error(`Unsupported section type: ${sectionType}`);
     if (!intensities.has(intensity)) throw new Error(`Unsupported intensity: ${intensity}`);
     if (!visualRecommendations.has(visualRecommendation)) throw new Error(`Unsupported visual recommendation: ${visualRecommendation}`);
     const startSegment = numberValue(item.startSegment, `sections[${index}].startSegment`);
     const endSegment = numberValue(item.endSegment, `sections[${index}].endSegment`);
-    const confidence = numberValue(item.confidence, `sections[${index}].confidence`);
-    if (!Number.isInteger(startSegment) || !Number.isInteger(endSegment) || startSegment < 0 || endSegment < startSegment || endSegment >= segmentCount) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
+    const confidence = item.confidence ? numberValue(item.confidence, `sections[${index}].confidence`) : 1.0;
+    const semanticConfidence = item.semanticConfidence ? numberValue(item.semanticConfidence, `sections[${index}].semanticConfidence`) : confidence;
+    if (!Number.isInteger(startSegment) || !Number.isInteger(endSegment) || startSegment < 0 || endSegment < startSegment) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
+    if (startSegment >= segmentCount) throw new Error(`Invalid segment range at sections[${index}]: ${startSegment}-${endSegment}`);
+    const validEndSegment = Math.min(endSegment, segmentCount - 1);
     if (confidence < 0 || confidence > 1) throw new Error(`Invalid confidence at sections[${index}].confidence`);
     return {
       sectionType,
+      secondaryType: item.secondaryType ? stringValue(item.secondaryType, `sections[${index}].secondaryType`) as any : undefined,
+      semanticConfidence,
+      semanticEvidence: item.semanticEvidence ? stringValue(item.semanticEvidence, `sections[${index}].semanticEvidence`) : '',
       startSegment,
-      endSegment,
+      endSegment: validEndSegment,
       intensity,
       visualRecommendation,
       suggestedDisplayText: optionalStringValue(item.suggestedDisplayText, `sections[${index}].suggestedDisplayText`),
       scriptureReference: optionalStringValue(item.scriptureReference, `sections[${index}].scriptureReference`),
       confidence,
-      reason: stringValue(item.reason, `sections[${index}].reason`),
+      reason: item.reason ? stringValue(item.reason, `sections[${index}].reason`) : 'Semantic pass',
     };
   });
   const overallConfidence = numberValue(root.overallConfidence, 'overallConfidence');
@@ -467,7 +478,57 @@ export class OllamaDirectorProvider implements DirectorProvider {
 
   async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     const required = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
-    return this.generate(input, promptFor(input), 'analysis', required);
+    
+    // Pass 1: Semantics
+    let semanticResult = await this.generate(input, semanticAnalysisPromptFor(input), 'analysis', required);
+    if (semanticResult.providerResult !== 'ai-success' && semanticResult.providerResult !== 'ai-retry-success') return semanticResult;
+    
+    // Check for ambiguity
+    let ambiguous = false;
+    for (const sec of semanticResult.analysis!.sections) {
+      if (validateClassificationAmbiguity(sec)) {
+        ambiguous = true;
+        break;
+      }
+    }
+    
+    if (ambiguous) {
+      // Reconcile once
+      const reconResult = await this.generate(input, semanticReconciliationPromptFor(input, semanticResult.analysis!.sections), 'analysis', required, 1);
+      if (reconResult.providerResult === 'ai-success' || reconResult.providerResult === 'ai-retry-success') {
+        semanticResult = reconResult;
+      }
+    }
+    
+    // Pass 2: Visuals
+    const visualResult = await this.generate(input, visualDecisionPromptFor(input, semanticResult.analysis!), 'analysis', required);
+    if (visualResult.providerResult !== 'ai-success' && visualResult.providerResult !== 'ai-retry-success') return visualResult;
+    
+    // Combine Semantics and Visuals
+    const finalSections = semanticResult.analysis!.sections.map(semSec => {
+      const visSec = visualResult.analysis!.sections.find(v => v.start === semSec.start && v.end === semSec.end) || visualResult.analysis!.sections.find(v => v.id === semSec.id);
+      if (!visSec) return semSec;
+      return {
+        ...semSec,
+        intensity: visSec.intensity,
+        suggestedDisplayText: visSec.suggestedDisplayText,
+        scriptureReference: visSec.scriptureReference,
+        editorialIntent: visSec.editorialIntent,
+        visualRecommendation: visSec.visualRecommendation,
+        confidence: Math.min(semSec.confidence, visSec.confidence),
+        reason: visSec.reason
+      };
+    });
+    
+    return {
+      ...visualResult,
+      attempts: [...semanticResult.attempts, ...visualResult.attempts],
+      rawResponses: [...semanticResult.rawResponses, ...visualResult.rawResponses],
+      analysis: {
+        ...semanticResult.analysis!,
+        sections: finalSections
+      } as any
+    };
   }
 
   async repairCoverage(request: DirectorCoverageRepairRequest): Promise<DirectorProviderResult> {
@@ -585,4 +646,85 @@ export function validateDirector(analysis: SermonAnalysis, beats: VideoBeat[], p
 
 export function directorDependencyNames(): string[] {
   return ['canonical-transcript', 'director-policy', 'provider-model-config', 'prompt-schema', 'sermon-analysis', 'visual-intensity-map', 'beatmap', 'edit-plan', 'render'];
+}
+
+export function semanticAnalysisPromptFor(input: DirectorInput): string {
+  const indices = primarySegmentIndices(input);
+  return [
+    'You are a reverent Bengali sermon semantic extractor.',
+    'Return only one JSON object. Do not include markdown, prose, timestamps, project IDs, or source IDs.',
+    'Use inclusive numbered transcript segment ranges. The application resolves identity and timing.',
+    'Your ONLY job is to classify the semantic nature of the content.',
+    'If a section serves multiple purposes (e.g. a story that teaches a point), provide both a sectionType (primary) and a secondaryType.',
+    'Provide semanticEvidence referencing the transcript structure. Do not expose chain-of-thought.',
+    'Allowed sectionType and secondaryType: introduction, scripture-reading, teaching, main-point, illustration, story, testimony, question, application, transition, prayer, emotional-ministry, conclusion, altar-call.',
+    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startSegment":0,"endSegment":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative of Paul in Rome"}],"overallConfidence":0.0}.',
+    'Do not omit required fields.',
+    ...coverageRules,
+    `Primary segment indices requiring complete coverage: ${indices.join(', ')}.`,
+    `Numbered transcript segments:\n${numberedSegments(input)}`,
+  ].join('\n');
+}
+
+export function visualDecisionPromptFor(input: DirectorInput, semantics: SermonAnalysis): string {
+  return [
+    'You are a reverent Bengali sermon visual director.',
+    'Return only one JSON object matching the provided semantic sections exactly.',
+    'Do NOT change startSegment, endSegment, sectionType, or secondaryType.',
+    'For each section, determine the visualRecommendation and intensity.',
+    'Respect that prayer, Scripture, altar call, and emotional ministry often need speaker-full or none.',
+    'Reverent Retention does not mean visual inactivity. For ordinary teaching, stories, questions, and emphasis, consider restrained captions, sermon points, punch-ins, reframes, Scripture treatments, contextual B-roll, or an intentional visual reset when semantically useful.',
+    'Stories and illustrations: actively consider contextual B-roll first; when B-roll is not semantically justified, consider a caption, punch-in, or reframe.',
+    'No Change is deliberate, not the safest default. For eligible normal teaching/story/emphasis sections, explain why No Change is better than the available restrained alternatives.',
+    'If your rationale says contextual B-roll is appropriate, then choose image-broll unless you explicitly justify why remaining on the speaker is better.',
+    'If you select speaker-full or none for a HIGH-opportunity story, provide a specific deliberate-speaker-led justification.',
+    'Allowed intensity: reverent-calm, normal-teaching, story-illustration, emphasis.',
+    'Allowed editorialIntent: PRESERVE_SPEAKER, EMPHASIZE_SPEAKER, SHOW_KEY_TEXT, SHOW_SCRIPTURE, USE_CONTEXTUAL_VISUAL, VISUAL_RESET.',
+    'Allowed visualRecommendation: speaker-full, speaker-left, speaker-right, speaker-punch-in, caption, scripture-card, title-card, keyword-graphic, image-broll, video-broll, motion-graphic, split-screen, none.',
+    'JSON shape: {"sections":[{"sectionType":"story","startSegment":0,"endSegment":0,"intensity":"story-illustration","editorialIntent":"USE_CONTEXTUAL_VISUAL","suggestedDisplayText":"optional Bengali label","scriptureReference":"optional","visualRecommendation":"image-broll","confidence":0.9,"reason":"Visualizes Paul in Rome"}],"overallConfidence":0.0}.',
+    `Numbered transcript segments:\n${numberedSegments(input)}`,
+    `Stable Semantic Classification to apply visual decisions to:\n${JSON.stringify(semantics.sections.map(s => ({ sectionType: s.type, secondaryType: s.secondaryType, startSegment: s.start, endSegment: s.end, semanticEvidence: s.semanticEvidence })), null, 2)}`
+  ].join('\n');
+}
+
+export function semanticReconciliationPromptFor(input: DirectorInput, sections: any[]): string {
+  return [
+    'You are a reverent Bengali sermon semantic reconciler.',
+    'Return only one JSON object updating the semantic classification of the provided sections.',
+    'Some sections were flagged as AMBIGUOUS because they contain strong narrative evidence (e.g. telling a story, recounting events) but were classified only as teaching or main-point.',
+    'Review the transcript and if a section is genuinely narrative, update its sectionType or secondaryType to story, illustration, or testimony.',
+    'Do NOT change startSegment or endSegment boundaries. Only reconsider the semantic classification.',
+    'JSON shape: {"sections":[{"sectionType":"story","secondaryType":"main-point","startSegment":0,"endSegment":0,"semanticConfidence":0.9,"semanticEvidence":"Pastor recounts the narrative"}],"overallConfidence":0.0}.',
+    `Numbered transcript segments:\n${numberedSegments(input)}`,
+    `Sections requiring reconciliation:\n${JSON.stringify(sections, null, 2)}`
+  ].join('\n');
+}
+
+export function validateClassificationAmbiguity(section: { type: string, semanticEvidence?: string }): boolean {
+  if (!section.semanticEvidence) return false;
+  if (['story', 'illustration', 'testimony', 'narrative'].includes(section.type)) return false;
+  const lower = section.semanticEvidence.toLowerCase();
+  const narrativeKeywords = ['story', 'recount', 'event', 'action', 'narrative', 'happened', 'told a', 'telling a'];
+  let matchCount = 0;
+  for (const word of narrativeKeywords) {
+    if (lower.includes(word)) matchCount++;
+  }
+  return matchCount >= 2;
+}
+
+export type SemanticStability = 'STABLE' | 'COMPATIBLE_VARIATION' | 'UNSTABLE';
+export function evaluateSemanticStability(runA: { type: string, secondaryType?: string }, runB: { type: string, secondaryType?: string }): SemanticStability {
+  if (runA.type === runB.type && runA.secondaryType === runB.secondaryType) return 'STABLE';
+  
+  const aRoles = [runA.type, runA.secondaryType].filter(Boolean);
+  const bRoles = [runB.type, runB.secondaryType].filter(Boolean);
+  
+  // If they both preserve a narrative role, or both preserve a teaching role, they are compatible.
+  const aHasNarrative = aRoles.some(r => ['story', 'illustration', 'testimony', 'narrative'].includes(r!));
+  const bHasNarrative = bRoles.some(r => ['story', 'illustration', 'testimony', 'narrative'].includes(r!));
+  
+  if (aHasNarrative && bHasNarrative) return 'COMPATIBLE_VARIATION';
+  if (!aHasNarrative && !bHasNarrative && aRoles.some(r => bRoles.includes(r!))) return 'COMPATIBLE_VARIATION';
+  
+  return 'UNSTABLE';
 }

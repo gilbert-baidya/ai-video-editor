@@ -111,7 +111,7 @@ function isReusable(previous: MediaAsset | undefined, previousIndexerVersion: st
     && previous.libraryRootId === root.id
     && previous.libraryPolicyVersion === root.rightsPolicyVersion
     && previous.rightsStatus === root.defaultRightsStatus
-    && previous.rightsSource === 'library-root-default';
+    && previous.rightsBasis === 'owned';
 }
 
 async function createThumbnail(assetPath: string, outputPath: string, kind: 'image' | 'video'): Promise<void> {
@@ -159,7 +159,7 @@ async function indexAsset(root: MediaLibraryRoot, path: string, outputDirectory:
     categories,
     searchTerms: normalizeMediaSearchTerms([basename(path, extname(path)), relativePath, ...tags, ...categories]),
     rightsStatus: root.defaultRightsStatus,
-    rightsSource: 'library-root-default',
+    rightsBasis: 'owned',
     libraryRootId: root.id,
     libraryPolicyVersion: root.rightsPolicyVersion,
     usable: unusableReasons.length === 0,
@@ -205,5 +205,5 @@ export async function indexLocalMedia(options: MediaIndexOptions): Promise<Media
 }
 
 export function rightsAllowsAutomation(status: MediaRightsStatus): boolean {
-  return status === 'owned' || status === 'approved';
+  return status === 'approved';
 }

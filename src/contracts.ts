@@ -27,7 +27,10 @@ export interface SermonSection {
   end: number;
   transcriptText: string;
   sourceSegmentIds: string[];
-  type: SermonSectionType;
+  type: SermonSectionType; // primary
+  secondaryType?: SermonSectionType;
+  semanticConfidence?: number;
+  semanticEvidence?: string;
   intensity?: VisualIntensity;
   suggestedDisplayText?: string;
   scriptureReference?: string;
@@ -106,7 +109,8 @@ export interface SourceAsset {
 }
 
 export type MediaAssetKind = 'image' | 'video';
-export type MediaRightsStatus = 'owned' | 'approved' | 'unknown';
+export type MediaRightsStatus = 'approved' | 'unknown' | 'restricted';
+export type MediaRightsBasis = 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown';
 
 export interface MediaLibraryRoot {
   id: string;
@@ -141,7 +145,9 @@ export interface MediaAsset {
   searchTerms: string[];
   thumbnailPath?: string;
   rightsStatus: MediaRightsStatus;
-  rightsSource: 'library-root-default';
+  rightsBasis: MediaRightsBasis;
+  rightsNote?: string;
+  rightsConfirmedAt?: string;
   libraryRootId: string;
   libraryPolicyVersion: string;
   usable: boolean;

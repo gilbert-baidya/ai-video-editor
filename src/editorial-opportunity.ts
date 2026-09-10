@@ -73,7 +73,8 @@ export interface DirectorQualitySummary {
 export type StoryTreatmentStatus = 'treated' | 'untreated' | 'deliberate-speaker-led' | 'not-a-story';
 
 export function determineStoryTreatment(section: SermonSection): StoryTreatmentStatus {
-  if (!['story', 'illustration', 'testimony', 'narrative'].includes(section.type)) return 'not-a-story';
+  const isStory = ['story', 'illustration', 'testimony', 'narrative'].includes(section.type) || (section.secondaryType && ['story', 'illustration', 'testimony', 'narrative'].includes(section.secondaryType));
+  if (!isStory) return 'not-a-story';
   
   if (isMeaningfulRecommendation(section.visualRecommendation)) return 'treated';
   if (section.editorialIntent === 'PRESERVE_SPEAKER') return 'deliberate-speaker-led';

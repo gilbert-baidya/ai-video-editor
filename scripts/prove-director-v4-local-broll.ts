@@ -23,7 +23,7 @@ const preview: PreviewWindow = {
 };
 
 function configuredRights(value: string | undefined): MediaLibraryRoot['defaultRightsStatus'] {
-  return value === 'owned' || value === 'approved' ? value : 'unknown';
+  return value === 'approved' ? value : 'unknown';
 }
 
 const configuredMediaRights = configuredRights(process.env.V4_MEDIA_RIGHTS ?? process.env.V4_PROOF_MEDIA_RIGHTS);

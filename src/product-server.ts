@@ -114,7 +114,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
     sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
   } else if (request.method === 'POST' && action === 'assets') {
-    const input = await bodyJson<{ path: string, description: string, rightsConfirmed: boolean }>(request);
+    const input = await bodyJson<{ path: string, description: string, rightsStatus: 'approved' | 'unknown' | 'restricted', rightsBasis: 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown', rightsNote?: string }>(request);
     sendJson(response, 200, await orchestrator.importLocalAsset(projectId, input));
   } else if (request.method === 'PUT' && action === 'review') {
     const input = await bodyJson<{ review: ReviewState }>(request);

@@ -31,7 +31,7 @@ function fixture(): ReviewWorkspaceData {
   const asset: MediaAsset = {
     id: 'asset-1', path: '/fixture/image.png', relativePath: 'image.png', fileName: 'image.png', kind: 'image', mimeType: 'image/png',
     sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z', width: 1920, height: 1080, aspectRatio: 16 / 9, hasAudio: false,
-    tags: [], categories: [], searchTerms: [], rightsStatus: 'owned', rightsSource: 'library-root-default', libraryRootId: 'root', libraryPolicyVersion: '1', usable: true, unusableReasons: [],
+    tags: [], categories: [], searchTerms: [], rightsStatus: 'approved', rightsBasis: 'owned', libraryRootId: 'root', libraryPolicyVersion: '1', usable: true, unusableReasons: [],
   };
   const aiPlan: EditPlan = {
     schemaVersion: '1.0', projectId: 'office-safe-review', sourceTranscriptHash: sha256Browser('মূল বাংলা বক্তব্য'),

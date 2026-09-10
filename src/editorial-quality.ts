@@ -75,7 +75,7 @@ function realizedBroll(operation: Extract<EditOperation, { type: 'broll' }>, med
   const asset = mediaAssets.find((candidate) => candidate.id === operation.assetId);
   if (!asset) return 'Approved B-roll asset is missing from the render media set.';
   if (!asset.usable) return 'Approved B-roll asset is technically unusable.';
-  if (asset.rightsStatus !== 'owned' && asset.rightsStatus !== 'approved') return `Approved B-roll rights status is ${asset.rightsStatus}.`;
+  if (asset.rightsStatus !== 'approved') return `Approved B-roll rights status is ${asset.rightsStatus}.`;
   return undefined;
 }
 

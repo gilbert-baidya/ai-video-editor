@@ -226,7 +226,7 @@ export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' 
       const asset = data.mediaIndex.assets.find((candidate) => candidate.id === resolvedOperation.assetId);
       if (!asset) blockers.push(`${beat.section.id}: selected B-roll asset is missing from the media index.`);
       else {
-        if (asset.rightsStatus !== 'owned' && asset.rightsStatus !== 'approved') blockers.push(`${beat.section.id}: selected media rights require review.`);
+        console.log("CHECKING RIGHTS:", asset.rightsStatus); if (asset.rightsStatus !== 'approved') { console.log("ADDING BLOCKER"); blockers.push(`${beat.section.id}: selected media rights require review.`); }
         if (!asset.usable) blockers.push(`${beat.section.id}: selected media is technically unusable.`);
       }
     }
