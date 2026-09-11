@@ -9,6 +9,8 @@ import type {
   VideoBeat,
   VisualIntensity,
   VisualRecommendation,
+  OpportunityLevel,
+  VisualFamily,
 } from './contracts.ts';
 import { resolveDisplayText, type ContentTrustPolicy } from './content-trust.ts';
 import { resolvePrimarySegmentIds, validateCanonicalCoverage } from './canonical-coverage.ts';
@@ -36,10 +38,10 @@ export interface AISermonSection {
   semanticFunction?: string;
   boundaryReason?: string;
   brollIntent?: AIBrollIntent;
-  
+
   startSegment: number;
   endSegment: number;
-  
+
   intensity: VisualIntensity;
   suggestedDisplayText?: string;
   scriptureReference?: string;
@@ -507,11 +509,11 @@ export class OllamaDirectorProvider implements DirectorProvider {
 
   async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     const required = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
-    
+
     // Pass 1: Semantics
     let semanticResult = await this.generate(input, semanticAnalysisPromptFor(input), 'analysis', required);
     if (semanticResult.providerResult !== 'ai-success' && semanticResult.providerResult !== 'ai-retry-success') return semanticResult;
-    
+
     // Check for ambiguity
     let ambiguous = false;
     for (const sec of semanticResult.analysis!.sections) {
@@ -520,7 +522,7 @@ export class OllamaDirectorProvider implements DirectorProvider {
         break;
       }
     }
-    
+
     if (ambiguous) {
       // Reconcile once
       const reconResult = await this.generate(input, semanticReconciliationPromptFor(input, semanticResult.analysis!.sections), 'analysis', required, 1);
@@ -528,11 +530,11 @@ export class OllamaDirectorProvider implements DirectorProvider {
         semanticResult = reconResult;
       }
     }
-    
+
     // Pass 2: Visuals
     const visualResult = await this.generate(input, visualDecisionPromptFor(input, semanticResult.analysis!), 'analysis', required);
     if (visualResult.providerResult !== 'ai-success' && visualResult.providerResult !== 'ai-retry-success') return visualResult;
-    
+
     // Combine Semantics and Visuals
     const finalSections = semanticResult.analysis!.sections.map(semSec => {
       const visSec = visualResult.analysis!.sections.find(v => v.start === semSec.start && v.end === semSec.end) || visualResult.analysis!.sections.find(v => v.id === semSec.id);
@@ -548,7 +550,7 @@ export class OllamaDirectorProvider implements DirectorProvider {
         reason: visSec.reason
       };
     });
-    
+
     return {
       ...visualResult,
       attempts: [...semanticResult.attempts, ...visualResult.attempts],
@@ -625,10 +627,26 @@ function intentFor(type: SermonSectionType): VideoBeat['intent'] {
 export function generateVisualBeats(analysis: SermonAnalysis, trustPolicy?: ContentTrustPolicy): VideoBeat[] {
   return analysis.sections.map((section) => {
     const display = resolveDisplayText(section, analysis, trustPolicy);
+    let start = section.start;
+    let end = section.end;
+
+    // Deterministic policy for B-roll duration
+    if (section.visualRecommendation === 'image-broll' || section.visualRecommendation === 'video-broll') {
+      const sectionDuration = section.end - section.start;
+      if (sectionDuration > 10) {
+        // Cap B-roll length proportionally without hardcoding one absolute value
+        const targetDuration = Math.max(4, Math.min(8, sectionDuration * 0.4));
+        // Center the B-roll slightly or put it after the first 2 seconds of the section
+        const delay = Math.min(2, sectionDuration * 0.1);
+        start = section.start + delay;
+        end = start + targetDuration;
+      }
+    }
+
     return ({
     id: `beat-${section.id}`,
-    start: section.start,
-    end: section.end,
+    start,
+    end,
     transcriptText: section.transcriptText,
     intent: intentFor(section.type),
     visualType: section.visualRecommendation ?? fallbackVisual(section.type),
@@ -768,17 +786,17 @@ export function validateClassificationAmbiguity(section: { type: string, semanti
 export type SemanticStability = 'STABLE' | 'COMPATIBLE_VARIATION' | 'UNSTABLE';
 export function evaluateSemanticStability(runA: { type: string, secondaryType?: string }, runB: { type: string, secondaryType?: string }): SemanticStability {
   if (runA.type === runB.type && runA.secondaryType === runB.secondaryType) return 'STABLE';
-  
+
   const aRoles = [runA.type, runA.secondaryType].filter(Boolean);
   const bRoles = [runB.type, runB.secondaryType].filter(Boolean);
-  
+
   // If they both preserve a narrative role, or both preserve a teaching role, they are compatible.
   const aHasNarrative = aRoles.some(r => ['story', 'illustration', 'testimony', 'narrative'].includes(r!));
   const bHasNarrative = bRoles.some(r => ['story', 'illustration', 'testimony', 'narrative'].includes(r!));
-  
+
   if (aHasNarrative && bHasNarrative) return 'COMPATIBLE_VARIATION';
   if (!aHasNarrative && !bHasNarrative && aRoles.some(r => bRoles.includes(r!))) return 'COMPATIBLE_VARIATION';
-  
+
   return 'UNSTABLE';
 }
 
@@ -792,6 +810,56 @@ export interface SegmentationDiagnostics {
   coarseSegmentationRisk: 'NORMAL' | 'COARSE' | 'EXTREMELY_COARSE';
 }
 
+
+export function evaluateEditorialOpportunities(sections: SermonSection[]): void {
+  for (const section of sections) {
+    let level: OpportunityLevel = 'LOW';
+    const families: VisualFamily[] = ['SPEAKER'];
+    let isProtected = false;
+    let reason = 'Default low opportunity.';
+
+    if (section.type === 'prayer' || section.type === 'scripture-reading' || section.type === 'altar-call' || section.type === 'emotional-ministry') {
+      isProtected = true;
+      reason = 'Protected reverent content requires calm speaker focus.';
+      if (section.type === 'scripture-reading') {
+        families.push('SCRIPTURE');
+      }
+    } else if (section.type === 'story' || section.type === 'illustration' || section.type === 'testimony') {
+      level = 'HIGH';
+      families.push('BROLL', 'REFRAME');
+      reason = 'Narrative format supports strong visual contextualization.';
+    } else if (section.type === 'main-point' || section.type === 'application' || section.type === 'question') {
+      level = 'MEDIUM';
+      families.push('TEXT', 'REFRAME');
+      reason = 'Emphasis points benefit from typographic reinforcement or punch-ins.';
+      if (section.type === 'main-point') level = 'HIGH';
+    } else if (section.type === 'transition') {
+      level = 'MEDIUM';
+      families.push('VISUAL_RESET', 'REFRAME');
+      reason = 'Structural transition provides a clean boundary for resetting the visual flow.';
+    } else if (section.type === 'teaching') {
+      level = 'LOW';
+      families.push('REFRAME');
+      reason = 'Standard teaching relies primarily on speaker connection with occasional reframe.';
+    }
+
+    // Apply duration heuristics
+    const duration = section.end - section.start;
+    if (!isProtected && duration > 20 && level === 'LOW') {
+      level = 'MEDIUM';
+      reason += ' Upgraded to MEDIUM due to section length.';
+    }
+
+    section.editorialOpportunity = {
+      sectionId: section.id,
+      opportunityLevel: level,
+      recommendedFamilies: families,
+      isProtected,
+      reason
+    };
+  }
+}
+
 export function detectCoarseSegmentation(analysis: SermonAnalysis, transcriptDuration: number): SegmentationDiagnostics {
   const sectionCount = analysis.sections.length;
   const eligibleSections = analysis.sections.filter(s => s.type !== 'prayer' && s.type !== 'scripture-reading');
@@ -802,10 +870,10 @@ export function detectCoarseSegmentation(analysis: SermonAnalysis, transcriptDur
   const singleSectionTimeline = sectionCount === 1;
 
   let coarseSegmentationRisk: 'NORMAL' | 'COARSE' | 'EXTREMELY_COARSE' = 'NORMAL';
-  
+
   const functionDiversity = new Set(eligibleSections.map(s => s.semanticFunction)).size;
   const proportionLongest = transcriptDuration > 0 ? longestSectionDuration / transcriptDuration : 0;
-  
+
   if (singleSectionTimeline && transcriptDuration > 30) {
     coarseSegmentationRisk = 'EXTREMELY_COARSE';
   } else if (proportionLongest > 0.6 && functionDiversity < 2 && transcriptDuration > 45) {

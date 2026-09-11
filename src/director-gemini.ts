@@ -6,6 +6,7 @@ import type {
   DirectorProviderAvailability,
   DirectorInput,
   ProviderAttempt,
+  DirectorEditorialEnrichmentRequest,
 } from './director.ts';
 import {
   DIRECTOR_PROMPT_SCHEMA_VERSION,
@@ -14,6 +15,7 @@ import {
   validateClassificationAmbiguity,
   semanticReconciliationPromptFor,
   visualDecisionPromptFor,
+  editorialEnrichmentPromptFor,
   validateAIResponse,
   resolveAIResponse,
 } from './director.ts';
@@ -58,6 +60,18 @@ const visualSchema: Schema = {
           secondaryType: { type: Type.STRING },
           startIndex: { type: Type.INTEGER, description: "MUST exactly match the startIndex index from the input semantic classification. Do NOT output timestamps." },
           endIndex: { type: Type.INTEGER, description: "MUST exactly match the endIndex index from the input semantic classification. Do NOT output timestamps." },
+          planningContext: {
+            type: Type.OBJECT,
+            description: "Reflect on the recent visual treatment history BEFORE making a decision for this section.",
+            properties: {
+              previousVisualType: { type: Type.STRING },
+              previousEditorialIntent: { type: Type.STRING },
+              secondsSinceLastMeaningfulEdit: { type: Type.NUMBER },
+              recentBrollCount: { type: Type.INTEGER },
+              recentTextCount: { type: Type.INTEGER },
+              recentReframeCount: { type: Type.INTEGER }
+            }
+          },
           intensity: { type: Type.STRING },
           editorialIntent: { type: Type.STRING },
           suggestedDisplayText: { type: Type.STRING },
@@ -150,7 +164,7 @@ export class GeminiDirectorProvider implements DirectorProvider {
             responseSchema: schema,
           }
         });
-        
+
         if (response.usageMetadata) {
           record.inputTokenCount = response.usageMetadata.promptTokenCount;
           record.outputTokenCount = response.usageMetadata.candidatesTokenCount;
@@ -204,14 +218,14 @@ export class GeminiDirectorProvider implements DirectorProvider {
 
   async analyze(input: DirectorInput): Promise<DirectorProviderResult> {
     const required = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
-    
+
     // Pass 1: Semantics
     let semanticResult = await this.generate(input, semanticAnalysisPromptFor(input), 'analysis', required, semanticSchema);
     if (semanticResult.providerResult !== 'ai-success' && semanticResult.providerResult !== 'ai-retry-success') return semanticResult;
-    
+
     // Diagnostics and Coarse Segmentation check
     const diagnostics = detectCoarseSegmentation(semanticResult.analysis!, input.projectDuration);
-    
+
     if (diagnostics.coarseSegmentationRisk !== 'NORMAL') {
       const reason = `Coarse segmentation detected (${diagnostics.coarseSegmentationRisk}). The timeline is ${input.projectDuration}s but produced ${diagnostics.sectionCount} section(s). The longest is ${diagnostics.longestSectionDuration}s. Refine boundaries where semantic intent changes (e.g., from 'story' to 'main-point', or new story event).`;
       const reconResult = await this.generate(input, semanticAnalysisPromptFor(input, reason), 'analysis', required, semanticSchema, 1);
@@ -227,7 +241,7 @@ export class GeminiDirectorProvider implements DirectorProvider {
           break;
         }
       }
-      
+
       if (ambiguous) {
         const reconResult = await this.generate(input, semanticReconciliationPromptFor(input, semanticResult.analysis!.sections), 'analysis', required, semanticSchema, 1);
         if (reconResult.providerResult === 'ai-success' || reconResult.providerResult === 'ai-retry-success') {
@@ -235,11 +249,11 @@ export class GeminiDirectorProvider implements DirectorProvider {
         }
       }
     }
-    
+
     // Pass 2: Visuals
     const visualResult = await this.generate(input, visualDecisionPromptFor(input, semanticResult.analysis!), 'analysis', required, visualSchema);
     if (visualResult.providerResult !== 'ai-success' && visualResult.providerResult !== 'ai-retry-success') return visualResult;
-    
+
     // Combine Semantics and Visuals
     const finalSections = semanticResult.analysis!.sections.map(semSec => {
       const visSec = visualResult.analysis!.sections.find(v => v.start === semSec.start && v.end === semSec.end) || visualResult.analysis!.sections.find(v => v.id === semSec.id);
@@ -255,7 +269,7 @@ export class GeminiDirectorProvider implements DirectorProvider {
         reason: visSec.reason
       };
     });
-    
+
     return {
       providerResult: semanticResult.providerResult === 'ai-retry-success' || visualResult.providerResult === 'ai-retry-success' ? 'ai-retry-success' : 'ai-success',
       provider: this.name,
@@ -265,5 +279,37 @@ export class GeminiDirectorProvider implements DirectorProvider {
       rawResponses: [...semanticResult.rawResponses, ...visualResult.rawResponses],
       analysis: { ...semanticResult.analysis!, sections: finalSections }
     };
+  }
+
+  async enrichEditorial(request: DirectorEditorialEnrichmentRequest): Promise<DirectorProviderResult> {
+    const input = { ...request.input, primarySegmentIds: request.eligibleSegmentIds };
+    const required = resolvePrimarySegmentIds(input.segments, input.primarySegmentIds);
+    const visualResult = await this.generate(
+      input,
+      editorialEnrichmentPromptFor({ ...request, input }),
+      'editorial-enrichment',
+      required,
+      visualSchema,
+      1,
+    );
+
+    if (visualResult.providerResult !== 'ai-success' && visualResult.providerResult !== 'ai-retry-success') return visualResult;
+
+    // Combine Semantics and Visuals for ONLY the sections the AI returned
+    const finalSections = visualResult.analysis!.sections
+      .filter(visSec => visSec.sourceSegmentIds.some(id => request.eligibleSegmentIds.includes(id)))
+      .map(visSec => {
+      const semSec = request.currentAnalysis.sections.find(s => s.start === visSec.start && s.end === visSec.end) || request.currentAnalysis.sections.find(s => s.id === visSec.id);
+      if (!semSec) return visSec;
+      return {
+        ...semSec,
+        intensity: visSec.intensity,
+        visualRecommendation: visSec.visualRecommendation,
+        reason: visSec.reason,
+        brollIntent: visSec.brollIntent
+      };
+    });
+
+    return { ...visualResult, analysis: { ...request.currentAnalysis, sections: finalSections } };
   }
 }

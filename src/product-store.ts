@@ -88,7 +88,7 @@ export class ProductProjectStore {
     const valid = validateRecord(record);
     const path = this.metadataPath(valid.workflow.projectId);
     await mkdir(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`;
+    const temporary = `${path}.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 10000)}.tmp`;
     await writeFile(temporary, `${JSON.stringify(valid, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
     await rename(temporary, path);
     return valid;

@@ -35,7 +35,8 @@
     "test-broll-realization-v1-3-4": "tsx scripts/test-broll-realization-v1-3-4.ts",
     "test-gemini-director-v1-3-6": "tsx scripts/test-gemini-director-v1-3-6.ts",
     "test-semantic-stability-v1-3-5": "tsx scripts/test-semantic-stability-v1-3-5.ts",
-    "test-semantic-segmentation-v1-3-7": "tsx scripts/test-semantic-segmentation-v1-3-7.ts"
+    "test-semantic-segmentation-v1-3-7": "tsx scripts/test-semantic-segmentation-v1-3-7.ts",
+    "test-multibeat-visual-realization-v1-3-8": "tsx scripts/test-multibeat-visual-realization-v1-3-8.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

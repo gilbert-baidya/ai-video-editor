@@ -86,7 +86,16 @@ function finalOperation(record: PolicyDecisionRecord): EditOperation[] {
   if (record.resolvedDecision === 'speaker-left' || record.resolvedDecision === 'speaker-right') return [{ id, type: 'speaker-position', start: record.start, end: record.end, position: record.resolvedDecision === 'speaker-left' ? 'left' : 'right', reason: record.reason, confidence: record.confidence }];
   if (record.resolvedDecision === 'scripture-card' || record.resolvedDecision === 'keyword-graphic' || record.resolvedDecision === 'title-card' || record.resolvedDecision === 'motion-graphic') return [{ id, type: 'sermon-point', start: record.start, end: record.end, text: record.displayText ?? '', textTrust: record.displayTextTrust, position: 'right', style: `director-v2-${record.resolvedDecision}`, graphicRegion: record.layout.graphicRegion, layout: record.layout, reason: record.reason, confidence: record.confidence }];
   if (record.resolvedDecision === 'image-broll' || record.resolvedDecision === 'video-broll' || record.resolvedDecision === 'split-screen') {
-    return [{ id, type: 'director-placeholder', start: record.start, end: record.end, visualType: record.resolvedDecision, text: record.displayText, textTrust: record.displayTextTrust, reason: record.reason, confidence: record.confidence }];
+    let start = record.start;
+    let end = record.end;
+    const sectionDuration = record.end - record.start;
+    if (sectionDuration > 10) {
+      const targetDuration = Math.max(4, Math.min(8, sectionDuration * 0.4));
+      const delay = (sectionDuration - targetDuration) / 2;
+      start = record.start + delay;
+      end = start + targetDuration;
+    }
+    return [{ id, type: 'director-placeholder', start, end, visualType: record.resolvedDecision, text: record.displayText, textTrust: record.displayTextTrust, reason: record.reason, confidence: record.confidence }];
   }
   return [{ id, type: 'director-placeholder', start: record.start, end: record.end, visualType: record.resolvedDecision, text: record.displayText, textTrust: record.displayTextTrust, reason: `Unsupported policy mapping: ${record.reason}`, confidence: record.confidence }];
 }
