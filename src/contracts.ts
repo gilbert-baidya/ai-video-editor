@@ -495,6 +495,7 @@ export type EditOperation =
       start: number;
       end: number;
       assetId: string;
+      visualType?: VisualRecommendation;
       mode: 'full-screen' | 'split-left' | 'split-right';
       placement?: PlacementDecision;
       muted: true;

@@ -49,7 +49,9 @@ export interface FinalQaSummary {
   bengaliGraphics: boolean;
   reviewReadiness: boolean;
   editorialQuality: boolean;
+  mediaIntegrity: boolean;
   editorial?: EditorialQualityResult;
+  mediaExport?: any;
   outputPath?: string;
 }
 
@@ -170,5 +172,5 @@ export function recoverProductProject(value: unknown): ProductProjectState | und
 
 export function finalQaPassed(qa: FinalQaSummary): boolean {
   return qa.video && qa.audio && qa.directorCoverage && qa.brollRights
-    && qa.placement && qa.bengaliGraphics && qa.reviewReadiness && qa.editorialQuality;
+    && qa.placement && qa.bengaliGraphics && qa.reviewReadiness && qa.editorialQuality && qa.mediaIntegrity;
 }

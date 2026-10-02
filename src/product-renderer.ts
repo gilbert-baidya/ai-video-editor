@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, stat, rename } from 'node:fs/promises';
 import { basename, extname, relative, resolve } from 'node:path';
 import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
@@ -7,6 +7,7 @@ import type { ProductStageAdapters } from './product-orchestrator.ts';
 import type { MediaAsset, SermonAnalysis } from './contracts.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
 import { createRendererPlan, evaluateEditorialQuality } from './editorial-quality.ts';
+import { validateMediaIntegrity } from './media-integrity.ts';
 
 export function createRemotionRenderAdapter(appRoot: string): NonNullable<ProductStageAdapters['render']> {
   return async (record, sourcePath, outputPath) => {
@@ -41,16 +42,28 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       videoFormat: record.workflow.render.format,
     };
     const composition = await selectComposition({ serveUrl, id: 'BanglaFoundation', inputProps });
+    const tempOutputPath = `${outputPath}.${process.pid}.tmp.mp4`;
     await renderMedia({
       composition,
       serveUrl,
       codec: 'h264',
       audioCodec: 'aac',
-      outputLocation: outputPath,
+      outputLocation: tempOutputPath,
       inputProps,
       x264Preset: 'veryfast',
+      pixelFormat: 'yuv420p',
     });
-    const output = await stat(outputPath);
+    const output = await stat(tempOutputPath);
+    if (output.size === 0) throw new Error('Render produced a zero-byte file.');
+
+    const { discoverCapabilities } = await import('./product-capabilities.ts');
+    const capabilities = await discoverCapabilities({ root: appRoot });
+    const ffprobePath = capabilities.ffprobe.state === 'AVAILABLE' ? capabilities.ffprobe.detail.split(' is available.')[0] : 'ffprobe';
+    const integrity = await validateMediaIntegrity(tempOutputPath, ffprobePath, record.workflow.render.format);
+    if (!integrity.passed) throw new Error(`Media integrity validation failed: ${integrity.failures.join(' ')}`);
+
+    await rename(tempOutputPath, outputPath);
+
     const editorial = evaluateEditorialQuality({
       analysis: workspace.analysis as SermonAnalysis,
       approvedPlan: plan,
@@ -63,6 +76,7 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       review: record.review,
       renderedOperationIds: renderPlan.audit.renderedOperations,
     });
+
     return {
       video: output.size > 0,
       audio: output.size > 0,
@@ -73,6 +87,8 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       reviewReadiness: record.workflow.stages.review.status === 'completed',
       editorialQuality: editorial.passed,
       editorial,
+      mediaIntegrity: integrity.passed,
+      mediaExport: integrity,
       outputPath: basename(outputPath),
     };
   };

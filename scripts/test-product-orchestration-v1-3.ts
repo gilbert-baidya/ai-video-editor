@@ -78,6 +78,7 @@ const orchestrator = new ProductOrchestrator(store, root, {
       bengaliGraphics: true,
       reviewReadiness: true,
       editorialQuality: true,
+      mediaIntegrity: true,
       outputPath: output,
     };
   },

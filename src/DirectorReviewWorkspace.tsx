@@ -84,6 +84,7 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
           start: section.start,
           end: section.end,
           assetId: candidate.assetId,
+          visualType: original && 'visualType' in original ? (original.visualType as any) : undefined,
           mode: 'full-screen',
           muted: true,
           reason: `Human selected ${candidate.asset?.fileName} for the Director B-roll recommendation.`,

@@ -20,6 +20,7 @@ async function main() {
     render: async () => ({
       status: 'PASS' as any, durationSeconds: 60, failures: [],
       video: true, audio: true, directorCoverage: true, brollRights: true, placement: true, bengaliGraphics: true, reviewReadiness: true, editorialQuality: true,
+      mediaIntegrity: true,
       editorial: { planHash: 'hash', workspaceCompatibility: 'compatible', realization: { schemaVersion: '1.0', droppedOperations: [], unsupportedOperations: [], renderedOperations: ['broll-section-1'], durationMatches: true, warnings: [] } } as any
     })
   });

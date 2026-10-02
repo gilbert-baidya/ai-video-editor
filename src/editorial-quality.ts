@@ -177,6 +177,20 @@ export function evaluateEditorialQuality(input: {
   if (input.format.fitMode === 'cover' && Math.abs(input.format.sourceAspectRatio - input.format.aspectRatio) > 0.01) {
     failures.push('Format integrity: cover fitting would destructively crop a mismatched source aspect ratio.');
   }
+
+  // Visual Layout Constraints
+  for (const operation of input.approvedPlan.operations) {
+    if (operation.type === 'broll') {
+      const isSplit = operation.mode === 'split-left' || operation.mode === 'split-right';
+      if ((operation.visualType === 'image-broll' || operation.visualType === 'video-broll') && isSplit) {
+        failures.push(`Layout violation: ${operation.visualType} must be FULL_FRAME_MEDIA, but was rendered as ${operation.mode}.`);
+      }
+      if (operation.visualType === 'split-screen' && !isSplit) {
+        failures.push(`Layout violation: split-screen must be SPLIT_SCREEN layout, but was rendered as ${operation.mode}.`);
+      }
+    }
+  }
+
   const eligible = input.analysis.sections.filter(eligibleForActivity).sort((left, right) => left.start - right.start);
   const eligibleWindows = eligible.reduce<Array<{ start: number; end: number; sectionIds: string[]; types: string[] }>>((windows, section) => {
     const current = windows.at(-1);

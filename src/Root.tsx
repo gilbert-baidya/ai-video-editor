@@ -55,12 +55,21 @@ export const FoundationComposition: React.FC<FoundationProps> = ({ sourcePath, e
   const resolvedGraphicFontSize = resolvedOperationFontSize(graphic?.type === 'sermon-point' ? graphic : undefined, graphicFontSize);
   const resolvedFullScreenFontSize = resolvedOperationFontSize(fullScreen?.type === 'full-screen-card' ? fullScreen : undefined, 86);
   const brollAsset = broll?.type === 'broll' ? mediaAssets.find((asset) => asset.id === broll.assetId) : undefined;
+  const isFullScreenBroll = broll?.type === 'broll' && brollAsset && broll.mode !== 'split-left' && broll.mode !== 'split-right';
+  const pastorOpacity = isFullScreenBroll ? 0 : 1;
+
   return (
     <AbsoluteFill style={{ backgroundColor: '#101820', fontFamily: 'Noto Sans Bengali, sans-serif' }}>
-      <Video src={staticFile(sourcePath)} style={{ width: '100%', height: '100%', objectFit: videoFormat.fitMode, ...positionStyle(speakerPosition) }} />
-      {broll?.type === 'broll' && brollAsset && broll.mode === 'full-screen' && brollAsset.kind === 'video' && <Video src={mediaSource(brollAsset)} volume={0} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
-      {broll?.type === 'broll' && brollAsset && broll.mode === 'full-screen' && brollAsset.kind === 'image' && <Img src={mediaSource(brollAsset)} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
-      {broll?.type === 'broll' && brollAsset && broll.mode !== 'full-screen' && <div style={{ position: 'absolute', top: 0, bottom: 0, width: '50%', overflow: 'hidden', ...(broll.mode === 'split-left' ? { left: 0 } : { right: 0 }) }}>{brollAsset.kind === 'video' ? <Video src={mediaSource(brollAsset)} volume={0} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Img src={mediaSource(brollAsset)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>}
+      <Video src={staticFile(sourcePath)} style={{ width: '100%', height: '100%', objectFit: videoFormat.fitMode, opacity: pastorOpacity, ...positionStyle(speakerPosition) }} />
+      {isFullScreenBroll && brollAsset.kind === 'video' && <Video src={mediaSource(brollAsset)} volume={0} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
+      {isFullScreenBroll && brollAsset.kind === 'image' && (
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <Img src={mediaSource(brollAsset)} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', filter: 'blur(40px)', transform: 'scale(1.1)' }} />
+          <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)' }} />
+          <Img src={mediaSource(brollAsset)} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
+        </div>
+      )}
+      {broll?.type === 'broll' && brollAsset && (broll.mode === 'split-left' || broll.mode === 'split-right') && <div style={{ position: 'absolute', top: 0, bottom: 0, width: '50%', overflow: 'hidden', ...(broll.mode === 'split-left' ? { left: 0 } : { right: 0 }) }}>{brollAsset.kind === 'video' ? <Video src={mediaSource(brollAsset)} volume={0} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Img src={mediaSource(brollAsset)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>}
       {fullScreen?.type === 'full-screen-card' && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 120, color: '#fff', fontSize: resolvedFullScreenFontSize, fontWeight: 700, lineHeight: 1.25, textAlign: 'center', backgroundColor: 'rgba(10, 20, 25, 0.9)' }}>{fullScreen.text}</div>}
       {graphic?.type === 'sermon-point' && <div style={{ position: 'absolute', maxWidth: 650, padding: '18px 24px', borderLeft: '4px solid #d4a84f', color: '#fff', fontSize: resolvedGraphicFontSize, fontWeight: 700, lineHeight: 1.35, textShadow: '0 3px 12px #000', backgroundColor: 'rgba(10, 20, 25, 0.62)', ...regionStyle(graphicRegion ?? layout?.graphicRegion) }}><div style={{ color: '#d4a84f', fontSize: Math.max(18, resolvedGraphicFontSize * 0.32), letterSpacing: 1, marginBottom: 8 }}>{graphicLabel(graphic.style)}</div>{graphic.text}</div>}
       {caption?.type === 'caption' && <div style={{ position: 'absolute', left: 100, right: 100, bottom: 100, color: '#fff', fontSize: 44, textAlign: 'center', textShadow: '0 3px 10px #000' }}>{caption.text}</div>}
