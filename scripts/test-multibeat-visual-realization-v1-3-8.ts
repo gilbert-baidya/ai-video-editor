@@ -69,7 +69,7 @@ async function run() {
   }, planHash);
   
   reviewState = applyReviewAction(reviewState, brollSection.id, 'replace-broll', {
-    operation: { ...policyOperation, type: 'broll', visualType: 'image-broll', assetId: 'img1', framing: 'contain' } as any
+    operation: { ...policyOperation, type: 'broll', visualType: 'image-broll', assetId: 'img1', mode: 'full-screen', muted: true, sourceStart: policyOperation.start, sourceEnd: policyOperation.end } as any
   });
   
   const approvedPlan = deriveApprovedEditPlan(policyResult.editPlan, reviewState);
@@ -89,12 +89,13 @@ async function run() {
 
   // QA Failure Tests
   // Dropped required B-roll causes QA failure
-  const droppedPlan: EditPlan = { ...approvedPlan, operations: [approvedOp, { id: 'dropped', type: 'broll', start: 0, end: 5, visualType: 'image-broll', assetId: 'img1' } as any] };
-  const realizationFail = auditPlanRealization(droppedPlan, [{ id: 'img1', kind: 'image', rightsStatus: 'approved', usable: true }] as any, [approvedOp.id]);
+  const img1 = { id: 'img1', path: '/fixture/img1.jpg', relativePath: 'img1.jpg', fileName: 'img1.jpg', kind: 'image', mimeType: 'image/jpeg', sizeBytes: 922012, modifiedAt: '2026-01-01T00:00:00.000Z', contentHash: 'c'.repeat(64), width: 1024, height: 1024, aspectRatio: 1, hasAudio: false, tags: [], categories: [], searchTerms: [], rightsStatus: 'approved', rightsBasis: 'owned', libraryRootId: 'fixture', libraryPolicyVersion: '1', usable: true, unusableReasons: [] } as any;
+  const droppedPlan: EditPlan = { ...approvedPlan, operations: [approvedOp, { id: 'dropped', type: 'broll', start: 0, end: 5, sourceStart: 0, sourceEnd: 5, visualType: 'image-broll', mode: 'full-screen', muted: true, reason: 'fixture', confidence: 1, assetId: 'img1' } as any] };
+  const realizationFail = auditPlanRealization(droppedPlan, [img1], [approvedOp.id]);
   assert.equal(realizationFail.droppedOperations.length, 1);
   
   const qaFail = evaluateEditorialQuality({
-    analysis, approvedPlan: droppedPlan, mediaAssets: [{ id: 'img1', kind: 'image', rightsStatus: 'approved', usable: true }] as any,
+    analysis, approvedPlan: droppedPlan, mediaAssets: [img1],
     durationSeconds: 60, canonicalCoveragePercent: 100, format: { orientation: 'portrait' } as any, sourceWidth: 1080, sourceHeight: 1920,
     renderedOperationIds: [approvedOp.id]
   });

@@ -115,6 +115,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const stage: 'ingest' | 'transcript' | 'director' | 'render' | 'qa' =
       action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
     sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
+  } else if (request.method === 'POST' && action === 'rerender') {
+    const input = await bodyJson<{ reason: string }>(request);
+    sendJson(response, 202, { job: await orchestrator.rerender(projectId, input.reason) });
   } else if (request.method === 'POST' && action === 'assets') {
     const input = await bodyJson<{ path: string, description: string, rightsStatus: 'approved' | 'unknown' | 'restricted', rightsBasis: 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown', rightsNote?: string }>(request);
     sendJson(response, 200, await orchestrator.importLocalAsset(projectId, input));

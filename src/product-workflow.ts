@@ -52,7 +52,19 @@ export interface FinalQaSummary {
   mediaIntegrity: boolean;
   editorial?: EditorialQualityResult;
   mediaExport?: any;
+  audioContinuity?: { verified: boolean; failures: string[] };
   outputPath?: string;
+}
+
+export interface RenderRevision {
+  revision: number;
+  requestedAt: string;
+  reason: string;
+  previousStatus: ProductProjectStatus;
+  previousStages: Pick<Record<ProductStage, ProductStageRecord>, 'render' | 'qa'>;
+  previousQaStatus?: 'PASS' | 'FAIL';
+  archivedOutputPath?: string;
+  approvedPlanHash: string;
 }
 
 export interface ProductProjectState {
@@ -72,6 +84,9 @@ export interface ProductProjectState {
   unresolvedBlockers: string[];
   render: RenderConfiguration;
   qa?: FinalQaSummary;
+  renderRevisions?: RenderRevision[];
+  // SHA-256 of the approved plan (JSON.stringify of the persisted plan) used by the latest render attempt.
+  lastRenderedPlanHash?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -157,6 +172,55 @@ export function renderBlockers(project: ProductProjectState): string[] {
 
 export function canRenderProject(project: ProductProjectState): boolean {
   return renderBlockers(project).length === 0 && project.status === 'READY_TO_RENDER';
+}
+
+// A project may be rendered again without touching its approved plan only after a render was attempted
+// (finished or failed) and every upstream stage, including human review, is still complete.
+export function rerenderBlockers(project: ProductProjectState): string[] {
+  const blockers: string[] = [];
+  if (project.status !== 'COMPLETED' && project.status !== 'FAILED') blockers.push(`Project status ${project.status} does not permit a re-render.`);
+  if (!['completed', 'failed'].includes(project.stages.render.status)) blockers.push('No render has been attempted for this project; use the normal render stage.');
+  for (const stage of ['ingest', 'transcript', 'director', 'review'] as const) {
+    if (project.stages[stage].status !== 'completed') blockers.push(`${stage} must remain completed before a re-render.`);
+  }
+  blockers.push(...renderBlockers({ ...project, status: 'READY_TO_RENDER' }).filter((item) => !blockers.includes(item)));
+  return [...new Set(blockers)];
+}
+
+type RevisionInput = { reason: string; approvedPlanHash: string; archivedOutputPath?: string; previousQaStatus?: 'PASS' | 'FAIL' };
+
+// Records the previous render/QA outcome as a revision entry and reopens only the render and QA stages.
+function appendRenderRevision(project: ProductProjectState, input: RevisionInput, now: string): ProductProjectState {
+  const reason = input.reason.trim();
+  if (!reason) throw new Error('A re-render requires a stated reason.');
+  const revisions = project.renderRevisions ?? [];
+  const entry: RenderRevision = {
+    revision: revisions.length + 2,
+    requestedAt: now,
+    reason,
+    previousStatus: project.status,
+    previousStages: { render: project.stages.render, qa: project.stages.qa },
+    previousQaStatus: input.previousQaStatus,
+    archivedOutputPath: input.archivedOutputPath,
+    approvedPlanHash: input.approvedPlanHash,
+  };
+  return { ...project, stages: { ...project.stages, render: defaultStage(), qa: defaultStage() }, qa: undefined, renderRevisions: [...revisions, entry], updatedAt: now };
+}
+
+// Re-render of an unchanged approved plan (for example after a deterministic renderer fix).
+export function beginRenderRevision(project: ProductProjectState, input: RevisionInput, now = new Date().toISOString()): ProductProjectState {
+  if (!input.reason.trim()) throw new Error('A re-render requires a stated reason.');
+  const blockers = rerenderBlockers(project);
+  if (blockers.length) throw new Error(`Re-render blocked: ${blockers.join(' ')}`);
+  return { ...appendRenderRevision(project, input, now), status: 'READY_TO_RENDER' };
+}
+
+// Used when a saved Review approves a different plan after a render was already attempted: the earlier
+// outcome is archived in history and the render/QA stages are reopened. The caller then completes the
+// review stage, which moves the project to READY_TO_RENDER through the normal state machine.
+export function recordPlanChangeRevision(project: ProductProjectState, input: RevisionInput, now = new Date().toISOString()): ProductProjectState {
+  if (!['completed', 'failed'].includes(project.stages.render.status)) throw new Error('No earlier render exists to archive.');
+  return appendRenderRevision(project, input, now);
 }
 
 export function recoverProductProject(value: unknown): ProductProjectState | undefined {

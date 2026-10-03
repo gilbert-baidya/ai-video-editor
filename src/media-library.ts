@@ -4,9 +4,11 @@ import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promi
 import { extname, join, relative, resolve, basename } from 'node:path';
 import { promisify } from 'node:util';
 import type { MediaAsset, MediaIndex, MediaLibraryRoot, MediaRightsStatus } from './contracts.ts';
+import { hashFile, readHeader } from './media-import.ts';
+import { assetMetadataIssues, sniffImage, sniffVideoContainer } from './media-asset-validation.ts';
 
 const exec = promisify(execFile);
-export const MEDIA_INDEXER_VERSION = 'director-v4-media-indexer-3';
+export const MEDIA_INDEXER_VERSION = 'director-v4-media-indexer-4';
 const MEDIA_EXTENSIONS = new Map([
   ['.jpg', { kind: 'image' as const, mimeType: 'image/jpeg' }],
   ['.jpeg', { kind: 'image' as const, mimeType: 'image/jpeg' }],
@@ -107,6 +109,7 @@ function isReusable(previous: MediaAsset | undefined, previousIndexerVersion: st
   return previousIndexerVersion === MEDIA_INDEXER_VERSION
     && previous?.path === path
     && previous.sizeBytes === sizeBytes
+    && Boolean(previous.contentHash)
     && previous.modifiedAt === modifiedAt
     && previous.libraryRootId === root.id
     && previous.libraryPolicyVersion === root.rightsPolicyVersion
@@ -129,14 +132,48 @@ async function indexAsset(root: MediaLibraryRoot, path: string, outputDirectory:
   if (previous && isReusable(previous, previousIndexerVersion, root, path, metadata.size, modifiedAt)) return { asset: previous, reused: true };
   const descriptor = MEDIA_EXTENSIONS.get(extname(path).toLowerCase());
   if (!descriptor) throw new Error(`Unsupported media extension: ${path}`);
-  const probed = await probe(path);
+  const unusableReasons: string[] = [];
+  let mimeType = descriptor.mimeType;
+  let width = 0;
+  let height = 0;
+  let probed: ProbeResult = {};
+  let contentHash: string | undefined;
+  if (metadata.size === 0) unusableReasons.push('File is empty (0 bytes).');
+  else {
+    contentHash = await hashFile(path);
+    // Format and dimensions come from the actual bytes, not from the file extension.
+    if (descriptor.kind === 'image') {
+      try {
+        const sniffed = sniffImage(await readFile(path));
+        mimeType = sniffed.mimeType;
+        width = sniffed.width;
+        height = sniffed.height;
+      } catch (error) {
+        unusableReasons.push(error instanceof Error ? error.message : String(error));
+      }
+    } else {
+      const container = sniffVideoContainer(await readHeader(path, 32));
+      if (container) mimeType = container.mimeType;
+      else unusableReasons.push('File content is not a recognised MP4/MOV/WebM container.');
+    }
+    if (descriptor.kind === 'video' || unusableReasons.length === 0) {
+      try {
+        probed = await probe(path);
+      } catch (error) {
+        unusableReasons.push(`ffprobe could not read the file: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+      }
+    }
+  }
   const videoStream = probed.streams?.find((stream) => stream.codec_type === 'video');
   const audioStream = probed.streams?.find((stream) => stream.codec_type === 'audio');
-  const width = videoStream?.width ?? 0;
-  const height = videoStream?.height ?? 0;
+  if (descriptor.kind === 'video') {
+    width = videoStream?.width ?? 0;
+    height = videoStream?.height ?? 0;
+  } else if (videoStream?.width && videoStream.height && (videoStream.width !== width || videoStream.height !== height)) {
+    unusableReasons.push(`Header dimensions ${width}×${height} disagree with ffprobe ${videoStream.width}×${videoStream.height}.`);
+  }
   const { tags, categories } = inferTags(path);
-  const unusableReasons: string[] = [];
-  if (!width || !height) unusableReasons.push('Missing video dimensions.');
+  if (!width || !height) unusableReasons.push('Missing media dimensions.');
   if (descriptor.kind === 'video' && !(Number(probed.format?.duration) > 0)) unusableReasons.push('Missing video duration.');
   const relativePath = relative(root.path, path);
   const asset: MediaAsset = {
@@ -145,9 +182,10 @@ async function indexAsset(root: MediaLibraryRoot, path: string, outputDirectory:
     relativePath,
     fileName: basename(path),
     kind: descriptor.kind,
-    mimeType: descriptor.mimeType,
+    mimeType,
     sizeBytes: metadata.size,
     modifiedAt,
+    contentHash,
     durationSeconds: descriptor.kind === 'video' ? Number(probed.format?.duration ?? 0) : undefined,
     width,
     height,
@@ -162,9 +200,11 @@ async function indexAsset(root: MediaLibraryRoot, path: string, outputDirectory:
     rightsBasis: 'owned',
     libraryRootId: root.id,
     libraryPolicyVersion: root.rightsPolicyVersion,
-    usable: unusableReasons.length === 0,
+    usable: false,
     unusableReasons,
   };
+  unusableReasons.push(...assetMetadataIssues(asset).filter((issue) => !unusableReasons.includes(issue)));
+  asset.usable = unusableReasons.length === 0;
   if (createThumbnails && asset.usable) {
     const thumbnailPath = join(outputDirectory, 'thumbnails', `${asset.id}.jpg`);
     if (!(await exists(thumbnailPath))) await createThumbnail(path, thumbnailPath, descriptor.kind);

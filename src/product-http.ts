@@ -1,6 +1,6 @@
 import { assertProjectId } from './product-store.ts';
 
-const projectActions = new Set(['status', 'qa', 'source', 'output', 'review-workspace', 'ingest', 'transcribe', 'analyze', 'director', 'review', 'render', 'assets']);
+const projectActions = new Set(['status', 'qa', 'source', 'output', 'review-workspace', 'ingest', 'transcribe', 'analyze', 'director', 'review', 'render', 'rerender', 'assets']);
 
 export function parseProjectApiRoute(pathname: string): { projectId: string; action?: string } | undefined {
   const match = pathname.match(/^\/api\/projects\/([^/]+)(?:\/([^/]+))?$/);

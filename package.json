@@ -38,7 +38,11 @@
     "test-semantic-segmentation-v1-3-7": "tsx scripts/test-semantic-segmentation-v1-3-7.ts",
     "test-multibeat-visual-realization-v1-3-8": "tsx scripts/test-multibeat-visual-realization-v1-3-8.ts",
     "test-media-integrity-v1-3-8": "tsx scripts/test-media-integrity.ts",
-    "test-broll-layout-v1-3-8": "tsx scripts/test-broll-layout-v1-3-8.ts"
+    "test-broll-layout-v1-3-8": "tsx scripts/test-broll-layout-v1-3-8.ts",
+    "test-broll-review-timing-v1-3-8": "tsx scripts/test-broll-review-timing-v1-3-8.ts",
+    "test-media-import-v1-3-8": "tsx scripts/test-media-import-v1-3-8.ts",
+    "test-safe-rerender-v1-3-8": "tsx scripts/test-safe-rerender-v1-3-8.ts",
+    "test-replacement-workflow-v1-3-8": "tsx scripts/test-replacement-workflow-v1-3-8.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

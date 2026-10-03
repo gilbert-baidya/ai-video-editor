@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { access, readFile, stat, writeFile, mkdir, copyFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { basename, resolve } from 'node:path';
+import { basename, isAbsolute, resolve } from 'node:path';
 import type { EditPlan, TranscriptDocument } from './contracts.ts';
 import { OllamaDirectorProvider, DirectorProvider } from './director.ts';
 import { GeminiDirectorProvider } from './director-gemini.ts';
@@ -17,12 +16,12 @@ import type {
 } from './product-api.ts';
 import { discoverCapabilities } from './product-capabilities.ts';
 import { ProductProjectStore } from './product-store.ts';
-import { canRenderProject, createProductProject, finalQaPassed, updateProductStage, type FinalQaSummary, type ProductStage } from './product-workflow.ts';
+import { beginRenderRevision, canRenderProject, recordPlanChangeRevision, createProductProject, finalQaPassed, rerenderBlockers, updateProductStage, type FinalQaSummary, type ProductStage } from './product-workflow.ts';
 import { fingerprintExistingSource, parseYouTubeUrl, probeSource } from './source-ingestion.ts';
 import { applyRetentionPolicy } from './visual-policy.ts';
 import { canonicalTranscriptHash } from './sermon-chunking.ts';
-import { createHash } from 'crypto';
-import { createInitialReviewState, isReviewStateCompatible, updateReview, type ReviewWorkspaceData } from './director-review.ts';
+import { attachAssetCandidate, createInitialReviewState, deriveApprovedEditPlan, isReviewStateCompatible, updateReview, type ReviewWorkspaceData } from './director-review.ts';
+import { importImageAsset, verifyAssetOnDisk } from './media-import.ts';
 import type { MediaAsset } from './contracts.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
 import { buildBrollIntents, decideBroll } from './broll-selection.ts';
@@ -152,6 +151,52 @@ export class ProductOrchestrator {
     this.running.set(`${projectId}:${stage}`, execution);
     void execution.finally(() => this.running.delete(`${projectId}:${stage}`));
     return job;
+  }
+
+  // Renders an already-rendered project again with the approved plan unchanged (for example after a deterministic
+  // renderer fix). Nothing is edited by hand: prerequisites are verified, the previous outcome is archived in the
+  // revision history, and only the render and QA stages are reopened before the normal render job runs.
+  async rerender(projectId: string, reason: string): Promise<ProductJob> {
+    if (this.running.size && [...this.running.keys()].some((key) => key.startsWith(`${projectId}:`))) throw new Error('A stage is already running for this project.');
+    const record = await this.store.get(projectId);
+    const blockers = rerenderBlockers(record.workflow);
+    if (blockers.length) throw new Error(`Re-render blocked: ${blockers.join(' ')}`);
+    if (!record.review || !record.artifacts.approvedPlan) throw new Error('Re-render requires the persisted review and approved plan.');
+    const projectDirectory = this.store.projectDirectory(projectId);
+    const workspace = JSON.parse(await readFile(resolve(this.store.artifactDirectory(projectId), 'review-workspace.json'), 'utf8')) as ReviewDataPayload;
+    const persisted = JSON.parse(await readFile(resolve(projectDirectory, record.artifacts.approvedPlan), 'utf8')) as EditPlan;
+    const derived = deriveApprovedEditPlan(workspace.aiPlan, record.review, 'approved');
+    if (persisted.status !== 'approved' || sha256Browser(JSON.stringify(persisted)) !== sha256Browser(JSON.stringify(derived))) {
+      throw new Error('The persisted approved plan no longer matches the saved review; save the review again before rendering.');
+    }
+    const realization = auditPlanRealization(persisted, workspace.mediaIndex.assets, undefined, workspace.preview.durationSeconds);
+    const unrealizable = [...realization.droppedOperations, ...realization.unsupportedOperations].map((item) => `${item.operationId}: ${item.reason}`);
+    for (const operation of persisted.operations) {
+      const asset = operation.type === 'broll' ? workspace.mediaIndex.assets.find((candidate) => candidate.id === operation.assetId) : undefined;
+      if (asset) unrealizable.push(...(await verifyAssetOnDisk(asset)).map((issue) => `${operation.id}: ${issue}`));
+    }
+    if (unrealizable.length) throw new Error(`Re-render blocked: approved plan cannot be realized. ${unrealizable.join(' ')}`);
+
+    const archivedOutputPath = await this.archiveOutput(record);
+    const workflow = beginRenderRevision(record.workflow, {
+      reason,
+      approvedPlanHash: sha256Browser(JSON.stringify(persisted)),
+      archivedOutputPath,
+      previousQaStatus: record.output?.qaStatus,
+    });
+    await this.store.save({ ...record, workflow, qa: undefined, output: undefined, artifacts: { ...record.artifacts, render: undefined } });
+    return this.startStage(projectId, 'render');
+  }
+
+  private async archiveOutput(record: ProductProjectRecord): Promise<string | undefined> {
+    if (!record.artifacts.render) return undefined;
+    const projectDirectory = this.store.projectDirectory(record.workflow.projectId);
+    const current = resolve(projectDirectory, record.artifacts.render);
+    if (!(await access(current).then(() => true, () => false))) return undefined;
+    const archivedOutputPath = `output/revisions/final-sermon.r${(record.workflow.renderRevisions ?? []).length + 1}.mp4`;
+    await mkdir(resolve(projectDirectory, 'output/revisions'), { recursive: true });
+    await copyFile(current, resolve(projectDirectory, archivedOutputPath));
+    return archivedOutputPath;
   }
 
   async waitForStage(projectId: string, stage: ProductStage): Promise<void> {
@@ -350,78 +395,23 @@ export class ProductOrchestrator {
   }
 
   async importLocalAsset(projectId: string, input: { path: string, description: string, rightsStatus: 'approved' | 'unknown' | 'restricted', rightsBasis: 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown', rightsNote?: string }): Promise<MediaAsset> {
-    const artifacts = this.store.artifactDirectory(projectId);
-    const workspacePath = resolve(artifacts, 'review-workspace.json');
-    const workspace = JSON.parse(await readFile(workspacePath, 'utf8')) as ReviewWorkspaceData;
-    
-    const statResult = await stat(input.path);
-    const extension = input.path.split('.').pop()?.toLowerCase();
-    if (extension !== 'jpg' && extension !== 'jpeg' && extension !== 'png' && extension !== 'webp') {
-      throw new Error(`Unsupported extension: ${extension}`);
-    }
-    
-    // We should parse image size, but since this is a quick minimal import, we will use a naive approach or just read it from the file content if possible.
-    // Instead of parsing it strictly here without a library, we will hardcode a fallback but ideally we should parse the headers.
-    // Given the prompt: "Determine real image dimensions from the file."
-    const fileBuffer = await readFile(input.path);
-    let width = 1080;
-    let height = 1920;
-    if (extension === 'png' && fileBuffer.length > 24) {
-      width = fileBuffer.readUInt32BE(16);
-      height = fileBuffer.readUInt32BE(20);
-    } else if ((extension === 'jpg' || extension === 'jpeg') && fileBuffer.length > 2) {
-      // Basic SOF0 parser
-      let offset = 2;
-      while (offset < fileBuffer.length) {
-        if (fileBuffer[offset] !== 0xFF) break;
-        while(fileBuffer[offset] === 0xFF) offset++;
-        const marker = fileBuffer[offset];
-        offset++;
-        if (marker === 0xC0 || marker === 0xC2) { // SOF0 or SOF2
-          offset += 3; // length + precision
-          height = fileBuffer.readUInt16BE(offset);
-          width = fileBuffer.readUInt16BE(offset + 2);
-          break;
-        }
-        const len = fileBuffer.readUInt16BE(offset);
-        offset += len;
-      }
-    }
-    
-    const mimeType = `image/${extension === 'jpg' ? 'jpeg' : extension}`;
-    const assetId = `media-${createHash('sha256').update(fileBuffer).digest('hex').slice(0, 24)}`;
-    const destName = `${assetId}.${extension}`;
-    const destPath = resolve(this.store.projectDirectory(projectId), 'source', destName);
-    await mkdir(dirname(destPath), { recursive: true });
-    await copyFile(input.path, destPath);
-    
-    const asset: MediaAsset = {
-      id: assetId,
-      path: destPath,
-      relativePath: `source/${destName}`,
-      fileName: destName,
-      kind: 'image',
-      mimeType,
-      sizeBytes: statResult.size,
-      modifiedAt: statResult.mtime.toISOString(),
-      width,
-      height,
-      aspectRatio: width / height,
-      hasAudio: false,
-      tags: [],
-      categories: [],
-      searchTerms: [input.description],
+    if (typeof input.path !== 'string' || !isAbsolute(input.path)) throw new Error('Asset path must be an absolute path to a local file.');
+    if (typeof input.description !== 'string' || !input.description.trim()) throw new Error('Asset description is required.');
+    if (!['approved', 'unknown', 'restricted'].includes(input.rightsStatus)) throw new Error('Asset rights status is invalid.');
+    if (!['owned', 'permission', 'generated', 'public-domain', 'licensed', 'unknown'].includes(input.rightsBasis)) throw new Error('Asset rights basis is invalid.');
+    const workspacePath = resolve(this.store.artifactDirectory(projectId), 'review-workspace.json');
+    const workspace = JSON.parse(await readFile(workspacePath, 'utf8')) as ReviewDataPayload;
+    const asset = await importImageAsset({
+      sourcePath: input.path,
+      destinationDirectory: resolve(this.store.projectDirectory(projectId), 'media'),
+      relativeDirectory: 'media',
+      description: input.description.trim(),
       rightsStatus: input.rightsStatus,
       rightsBasis: input.rightsBasis,
       rightsNote: input.rightsNote,
-      rightsConfirmedAt: new Date().toISOString(),
-      libraryRootId: 'local-import',
-      libraryPolicyVersion: '1.0',
-      usable: true,
-      unusableReasons: [],
-    };
-    
-    workspace.mediaIndex.assets.push(asset);
+    });
+    workspace.mediaIndex.assets = [...workspace.mediaIndex.assets.filter((existing) => existing.id !== asset.id), asset];
+    workspace.beats = attachAssetCandidate(workspace.beats, asset);
     await writeFile(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`, 'utf8');
     return asset;
   }
@@ -435,8 +425,15 @@ export class ProductOrchestrator {
     const workspace = JSON.parse(await readFile(resolve(artifacts, 'review-workspace.json'), 'utf8')) as ReviewDataPayload;
     if (!isReviewStateCompatible(workspace, review)) throw new Error('Review state is incompatible with the persisted Director plan.');
     const resolved = updateReview(workspace, review);
-    const realization = auditPlanRealization(resolved.approvedPlan, workspace.mediaIndex.assets);
+    const realization = auditPlanRealization(resolved.approvedPlan, workspace.mediaIndex.assets, undefined, workspace.preview.durationSeconds);
+    const diskBlockers: string[] = [];
+    for (const operation of resolved.approvedPlan.operations) {
+      if (operation.type !== 'broll') continue;
+      const asset = workspace.mediaIndex.assets.find((candidate) => candidate.id === operation.assetId);
+      if (asset) diskBlockers.push(...(await verifyAssetOnDisk(asset)).map((issue) => `${operation.id}: ${issue}`));
+    }
     const realizationBlockers = [
+      ...diskBlockers,
       ...realization.droppedOperations.map((item) => `${item.operationId}: ${item.reason}`),
       ...realization.unsupportedOperations.map((item) => `${item.operationId}: ${item.reason}`),
     ];
@@ -450,15 +447,41 @@ export class ProductOrchestrator {
       writeFile(resolve(artifacts, 'plan-realization.json'), `${JSON.stringify(realization, null, 2)}\n`, 'utf8'),
       writeFile(resolve(artifacts, 'operation-trace.json'), `${JSON.stringify(trace, null, 2)}\n`, 'utf8'),
     ]);
-    const workflow = updateProductStage({ ...record.workflow, unresolvedBlockers: blockers }, 'review', ready
+    let base: ProductProjectRecord = { ...record, workflow: { ...record.workflow, unresolvedBlockers: blockers } };
+    let keepsRenderOutcome = false;
+    let planChanged = false;
+    if (ready && ['completed', 'failed'].includes(record.workflow.stages.render.status)) {
+      const planHash = sha256Browser(JSON.stringify(approvedPlan));
+      if (record.workflow.lastRenderedPlanHash === planHash && record.workflow.status === 'COMPLETED') {
+        // Same plan as the finished render: nothing to render again, so the completed outcome stays truthful.
+        keepsRenderOutcome = true;
+      } else {
+        // A different plan is now approved: archive the earlier outcome and reopen render/QA before review completes.
+        planChanged = true;
+        const archivedOutputPath = await this.archiveOutput(record);
+        base = {
+          ...base,
+          workflow: recordPlanChangeRevision(base.workflow, {
+            reason: 'Review approved a different plan after the previous render.',
+            approvedPlanHash: planHash,
+            archivedOutputPath,
+            previousQaStatus: record.output?.qaStatus,
+          }),
+          qa: undefined,
+          output: undefined,
+        };
+      }
+    }
+    const workflow = keepsRenderOutcome ? base.workflow : updateProductStage(base.workflow, 'review', ready
       ? { status: 'completed', progress: 100 }
       : { status: 'running', progress: Math.max(1, record.workflow.stages.review.progress) });
     return this.store.save({
-      ...record,
+      ...base,
       workflow,
       review,
       artifacts: {
-        ...record.artifacts,
+        ...base.artifacts,
+        render: planChanged ? undefined : base.artifacts.render,
         review: 'artifacts/review.json',
         approvedPlan: 'artifacts/approved-plan.json',
         planRealization: 'artifacts/plan-realization.json',
@@ -474,8 +497,10 @@ export class ProductOrchestrator {
     if (capabilities.render.state !== 'AVAILABLE') throw new Error(capabilities.render.detail);
     if (!this.adapters.render) throw new Error('Remotion product renderer is not configured for this host.');
     const outputPath = resolve(this.store.outputDirectory(record.workflow.projectId), 'final-sermon.mp4');
+    const renderedPlan = JSON.parse(await readFile(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.approvedPlan), 'utf8')) as EditPlan;
     const qa = await this.adapters.render(record, this.sourcePath(record), outputPath);
     const completed = this.completedRecord(record, 'render', false);
+    completed.workflow = { ...completed.workflow, lastRenderedPlanHash: sha256Browser(JSON.stringify(renderedPlan)) };
     return this.store.save({ ...completed, qa, artifacts: { ...record.artifacts, render: 'output/final-sermon.mp4' } });
   }
 

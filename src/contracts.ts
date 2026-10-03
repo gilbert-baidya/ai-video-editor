@@ -176,6 +176,8 @@ export interface MediaAsset {
   rightsBasis: MediaRightsBasis;
   rightsNote?: string;
   rightsConfirmedAt?: string;
+  originalFileName?: string;
+  importedAt?: string;
   libraryRootId: string;
   libraryPolicyVersion: string;
   usable: boolean;
@@ -490,6 +492,8 @@ export type EditOperation =
   | {
       id: string;
       type: 'broll';
+      // Canonical sermon-source timeline range this B-roll covers. Never an in-point into the B-roll asset:
+      // the renderer plays an asset from its own beginning at `start` on the composition timeline.
       sourceStart: number;
       sourceEnd: number;
       start: number;

@@ -1,6 +1,8 @@
 import type { EditOperation, EditPlan, MediaAsset, SermonAnalysis, SermonSection } from './contracts.ts';
 import type { ReviewState, ReviewWorkspaceData } from './director-review.ts';
 import type { VideoFormatProfile } from './video-format.ts';
+import { findOverlappingBroll, validateBrollOperation } from './broll-layout.ts';
+import { assetMetadataIssues, rightsEvidenceIssues } from './media-asset-validation.ts';
 
 export type MeaningfulEditKind = 'layout-change' | 'broll' | 'scripture-card' | 'sermon-point' | 'caption' | 'reframe' | 'title-treatment' | 'visual-reset';
 
@@ -44,7 +46,7 @@ export interface EditorialQualityResult {
 }
 
 export const EDITORIAL_QUALITY_CONTRACT_VERSION = 'editorial-quality-v1.3.1';
-export type EditorialQualityFailureCode = 'FORMAT_INTEGRITY' | 'EDIT_ACTIVITY' | 'PLAN_REALIZATION' | 'TEXT_QUALITY' | 'START_END_POLISH';
+export type EditorialQualityFailureCode = 'FORMAT_INTEGRITY' | 'LAYOUT_INTEGRITY' | 'EDIT_ACTIVITY' | 'PLAN_REALIZATION' | 'TEXT_QUALITY' | 'START_END_POLISH';
 
 export interface CreativeOperationTrace {
   beatId: string;
@@ -71,15 +73,18 @@ export function meaningfulEditEvents(plan: EditPlan): MeaningfulEditEvent[] {
   });
 }
 
-function realizedBroll(operation: Extract<EditOperation, { type: 'broll' }>, mediaAssets: MediaAsset[]): string | undefined {
+function brollAssetIssues(operation: Extract<EditOperation, { type: 'broll' }>, mediaAssets: MediaAsset[]): string[] {
   const asset = mediaAssets.find((candidate) => candidate.id === operation.assetId);
-  if (!asset) return 'Approved B-roll asset is missing from the render media set.';
-  if (!asset.usable) return 'Approved B-roll asset is technically unusable.';
-  if (asset.rightsStatus !== 'approved') return `Approved B-roll rights status is ${asset.rightsStatus}.`;
-  return undefined;
+  if (!asset) return ['Approved B-roll asset is missing from the render media set.'];
+  const issues: string[] = [];
+  if (!asset.usable) issues.push('Approved B-roll asset is technically unusable.');
+  if (asset.rightsStatus !== 'approved') issues.push(`Approved B-roll rights status is ${asset.rightsStatus}.`);
+  else issues.push(...rightsEvidenceIssues(asset));
+  issues.push(...assetMetadataIssues(asset).map((issue) => `Approved B-roll asset metadata is invalid: ${issue}`));
+  return issues;
 }
 
-export function auditPlanRealization(approvedPlan: EditPlan, mediaAssets: MediaAsset[], renderedOperationIds?: string[]): PlanRealizationAudit {
+export function auditPlanRealization(approvedPlan: EditPlan, mediaAssets: MediaAsset[], renderedOperationIds?: string[], durationSeconds?: number): PlanRealizationAudit {
   const renderedOperations: string[] = [];
   const unsupportedOperations: PlanRealizationAudit['unsupportedOperations'] = [];
   for (const operation of approvedPlan.operations) {
@@ -88,9 +93,10 @@ export function auditPlanRealization(approvedPlan: EditPlan, mediaAssets: MediaA
       continue;
     }
     if (operation.type === 'broll') {
-      const issue = realizedBroll(operation, mediaAssets);
-      if (issue) {
-        unsupportedOperations.push({ operationId: operation.id, reason: issue });
+      const asset = mediaAssets.find((candidate) => candidate.id === operation.assetId);
+      const issues = [...brollAssetIssues(operation, mediaAssets), ...validateBrollOperation(operation, asset, { durationSeconds })];
+      if (issues.length) {
+        unsupportedOperations.push({ operationId: operation.id, reason: issues.join(' ') });
         continue;
       }
     }
@@ -108,8 +114,8 @@ export function auditPlanRealization(approvedPlan: EditPlan, mediaAssets: MediaA
   };
 }
 
-export function createRendererPlan(approvedPlan: EditPlan, mediaAssets: MediaAsset[]): { plan: EditPlan; audit: PlanRealizationAudit } {
-  const audit = auditPlanRealization(approvedPlan, mediaAssets);
+export function createRendererPlan(approvedPlan: EditPlan, mediaAssets: MediaAsset[], durationSeconds?: number): { plan: EditPlan; audit: PlanRealizationAudit } {
+  const audit = auditPlanRealization(approvedPlan, mediaAssets, undefined, durationSeconds);
   if (audit.droppedOperations.length || audit.unsupportedOperations.length) {
     const reasons = [...audit.droppedOperations, ...audit.unsupportedOperations].map((item) => `${item.operationId}: ${item.reason}`);
     throw new Error(`Approved plan cannot be rendered without loss. ${reasons.join(' ')}`);
@@ -170,7 +176,7 @@ export function evaluateEditorialQuality(input: {
   const failures: string[] = [];
   const warnings: string[] = [];
   const events = meaningfulEditEvents(input.approvedPlan);
-  const realization = auditPlanRealization(input.approvedPlan, input.mediaAssets, input.renderedOperationIds);
+  const realization = auditPlanRealization(input.approvedPlan, input.mediaAssets, input.renderedOperationIds, input.durationSeconds);
   const activity = summarizeEditorialActivity(input.approvedPlan, input.durationSeconds, input.canonicalCoveragePercent, input.review);
   const sourceOrientation = input.sourceWidth < input.sourceHeight ? 'portrait' : 'landscape';
   if (sourceOrientation !== input.format.orientation) failures.push(`Format integrity: ${sourceOrientation} source was mapped to ${input.format.orientation} output.`);
@@ -178,18 +184,14 @@ export function evaluateEditorialQuality(input: {
     failures.push('Format integrity: cover fitting would destructively crop a mismatched source aspect ratio.');
   }
 
-  // Visual Layout Constraints
+  // Visual layout, timing, audio and asset-compatibility contract for every B-roll operation.
   for (const operation of input.approvedPlan.operations) {
-    if (operation.type === 'broll') {
-      const isSplit = operation.mode === 'split-left' || operation.mode === 'split-right';
-      if ((operation.visualType === 'image-broll' || operation.visualType === 'video-broll') && isSplit) {
-        failures.push(`Layout violation: ${operation.visualType} must be FULL_FRAME_MEDIA, but was rendered as ${operation.mode}.`);
-      }
-      if (operation.visualType === 'split-screen' && !isSplit) {
-        failures.push(`Layout violation: split-screen must be SPLIT_SCREEN layout, but was rendered as ${operation.mode}.`);
-      }
-    }
+    if (operation.type !== 'broll') continue;
+    const asset = input.mediaAssets.find((candidate) => candidate.id === operation.assetId);
+    failures.push(...validateBrollOperation(operation, asset, { durationSeconds: input.durationSeconds }));
+    failures.push(...brollAssetIssues(operation, input.mediaAssets).map((issue) => `Plan realization: ${operation.id}: ${issue}`));
   }
+  for (const [left, right] of findOverlappingBroll(input.approvedPlan.operations)) failures.push(`B-roll timing: ${left} overlaps ${right}.`);
 
   const eligible = input.analysis.sections.filter(eligibleForActivity).sort((left, right) => left.start - right.start);
   const eligibleWindows = eligible.reduce<Array<{ start: number; end: number; sectionIds: string[]; types: string[] }>>((windows, section) => {
@@ -247,7 +249,8 @@ export function evaluateEditorialQuality(input: {
   const failureCodes = [...new Set(failures.map((failure): EditorialQualityFailureCode => {
     if (failure.startsWith('Format integrity:')) return 'FORMAT_INTEGRITY';
     if (failure.startsWith('Edit activity:')) return 'EDIT_ACTIVITY';
-    if (failure.startsWith('Plan realization:')) return 'PLAN_REALIZATION';
+    if (failure.startsWith('Layout violation:')) return 'LAYOUT_INTEGRITY';
+    if (failure.startsWith('Plan realization:') || failure.startsWith('B-roll ')) return 'PLAN_REALIZATION';
     if (failure.startsWith('Text quality:')) return 'TEXT_QUALITY';
     return 'START_END_POLISH';
   }))];

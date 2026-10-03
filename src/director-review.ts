@@ -11,6 +11,8 @@ import type {
 } from './contracts.ts';
 import type { DirectorExecutionProvenance, DirectorExecutionSource } from './director-execution.ts';
 import { sha256Browser as sha256 } from './sha256.ts';
+import { defaultBrollWindow, isSplitMode, validateBrollOperation, type BrollOperation } from './broll-layout.ts';
+import { assetMetadataIssues, rightsEvidenceIssues } from './media-asset-validation.ts';
 import type { PolicyDecisionRecord } from './visual-policy.ts';
 import type { DirectorQualitySummary } from './editorial-opportunity.ts';
 import type { DirectorEditorialEnrichmentResult } from './director-enrichment.ts';
@@ -200,6 +202,68 @@ export function isReviewStateCompatible(data: Pick<ReviewWorkspaceData, 'project
     && review.purpose !== 'functional-test';
 }
 
+export function isReplacementCandidate(asset: MediaAsset): boolean {
+  return asset.usable && asset.rightsStatus === 'approved' && rightsEvidenceIssues(asset).length === 0 && assetMetadataIssues(asset).length === 0;
+}
+
+const BROLL_RECOMMENDATIONS = ['image-broll', 'video-broll', 'split-screen'];
+
+// Makes a newly indexed asset selectable on every B-roll beat. Relevance is not scored for human-imported
+// media, so the candidate carries no semantic score; eligibility reflects only validity and rights.
+export function attachAssetCandidate(beats: ReviewBeat[], asset: MediaAsset): ReviewBeat[] {
+  const eligible = isReplacementCandidate(asset);
+  return beats.map((beat) => {
+    if (!BROLL_RECOMMENDATIONS.includes(beat.section.visualRecommendation ?? '')) return beat;
+    const candidate: ReviewBeat['candidates'][number] = {
+      assetId: asset.id,
+      score: 0,
+      semanticScore: 0,
+      categoryScore: 0,
+      technicalScore: asset.usable ? 1 : 0,
+      rightsScore: asset.rightsStatus === 'approved' ? 1 : 0,
+      repetitionPenalty: 0,
+      reasons: ['Imported by the reviewer; relevance was not scored.'],
+      eligible,
+      asset,
+    };
+    return { ...beat, candidates: [...beat.candidates.filter((existing) => existing.assetId !== asset.id), candidate] };
+  });
+}
+
+// Compiles a reviewer's asset choice into a renderer operation. The Director's approved window is kept;
+// the operation type follows the asset kind explicitly instead of being inherited from the recommendation.
+export function buildBrollReplacementOperation(beat: Pick<ReviewBeat, 'section' | 'originalOperation'>, asset: MediaAsset, reason?: string): BrollOperation {
+  const { section, originalOperation: original } = beat;
+  if (!isReplacementCandidate(asset)) throw new Error(`Asset ${asset.fileName} is not usable: it is technically invalid or lacks approved rights evidence.`);
+  const originalBroll = original?.type === 'broll' ? original : undefined;
+  const originalBeatOperation = originalBroll ?? (original?.type === 'director-placeholder' ? original : undefined);
+  const originalWindow = originalBeatOperation ? { start: originalBeatOperation.start, end: originalBeatOperation.end } : defaultBrollWindow(section.start, section.end);
+  const originalVisual = originalBeatOperation ? originalBeatOperation.visualType : section.visualRecommendation;
+  const keepsSplit = originalVisual === 'split-screen' || (originalBroll !== undefined && originalVisual === undefined && isSplitMode(originalBroll.mode));
+  const visualType: BrollOperation['visualType'] = keepsSplit ? 'split-screen' : asset.kind === 'image' ? 'image-broll' : 'video-broll';
+  const mode: BrollOperation['mode'] = !keepsSplit ? 'full-screen' : originalBroll && isSplitMode(originalBroll.mode) ? originalBroll.mode : 'split-right';
+  const converted = originalVisual && originalVisual !== visualType && (originalVisual === 'image-broll' || originalVisual === 'video-broll');
+  const operation: BrollOperation = {
+    id: `broll-${section.id}`,
+    type: 'broll',
+    // Canonical sermon-source range (not an asset in-point); an existing operation keeps its own mapping.
+    sourceStart: originalBroll?.sourceStart ?? originalWindow.start,
+    sourceEnd: originalBroll?.sourceEnd ?? originalWindow.end,
+    start: originalWindow.start,
+    end: originalWindow.end,
+    assetId: asset.id,
+    visualType,
+    mode,
+    placement: originalBroll?.placement,
+    muted: true,
+    reason: `${reason ?? `Human selected ${asset.fileName} for the Director B-roll recommendation.`}${converted ? ` Operation explicitly converted from ${originalVisual} to ${visualType} to match the ${asset.kind} asset.` : ''}`,
+    confidence: originalBroll?.confidence ?? section.confidence,
+  };
+  const failures = validateBrollOperation(operation, asset, { section });
+  if (failures.length) throw new Error(failures.join(' '));
+  return operation;
+}
+
 export function applyReviewAction(state: ReviewState, beatId: string, action: ReviewAction, options: { operation?: EditOperation; displayText?: string; reason?: string } = {}): ReviewState {
   const decisions: ReviewDecision[] = state.decisions.map((decision): ReviewDecision => {
     if (decision.beatId !== beatId) return decision;
@@ -207,6 +271,7 @@ export function applyReviewAction(state: ReviewState, beatId: string, action: Re
     if (action === 'revert') return { ...decision, status: (decision.safeNoChange ? 'accepted' : 'pending') as ReviewStatus, reviewedOperation: decision.safeNoChange ? decision.originalOperation : undefined, approvedDisplayText: undefined, reviewerReason: decision.safeNoChange ? 'No visual operation: speaker-led state is preserved by policy.' : undefined, reviewedAt: decision.safeNoChange ? now : undefined, provenance: decision.originalProvenance ?? 'ai', resolution: decision.safeNoChange ? 'accepted' : undefined };
     if (action === 'accept') return { ...decision, status: 'accepted', reviewedOperation: decision.originalOperation, reviewerReason: options.reason ?? 'Accepted the resolved Director operation.', reviewedAt: now, provenance: 'human-override', resolution: 'accepted' };
     if (action === 'reject' || action === 'keep-pastor') return { ...decision, status: 'rejected', reviewedOperation: undefined, reviewerReason: options.reason ?? (action === 'keep-pastor' ? 'Keep Pastor — static: explicitly preserve the speaker-led source without the proposed takeover.' : 'Rejected the proposed creative operation.'), reviewedAt: now, provenance: 'human-override', resolution: action === 'keep-pastor' ? 'keep-pastor-static' : 'rejected' };
+    if (action === 'replace-broll' && options.operation?.type !== 'broll') throw new Error('replace-broll requires an explicit broll operation.');
     if (action === 'modify' || action === 'replace-broll') return { ...decision, status: 'modified', reviewedOperation: options.operation ?? decision.originalOperation, reviewerReason: options.reason ?? 'Modified during human review.', reviewedAt: now, provenance: 'human-override', resolution: 'modified' };
     if (action === 'approve-text') return { ...decision, status: decision.status === 'pending' ? 'modified' : decision.status, reviewedOperation: decision.reviewedOperation ?? decision.originalOperation, approvedDisplayText: options.displayText?.trim(), reviewerReason: options.reason ?? 'Display text explicitly approved by the reviewer.', reviewedAt: now, provenance: 'human-override', resolution: 'modified' };
     return decision;
@@ -226,9 +291,12 @@ export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' 
       const asset = data.mediaIndex.assets.find((candidate) => candidate.id === resolvedOperation.assetId);
       if (!asset) blockers.push(`${beat.section.id}: selected B-roll asset is missing from the media index.`);
       else {
-        console.log("CHECKING RIGHTS:", asset.rightsStatus); if (asset.rightsStatus !== 'approved') { console.log("ADDING BLOCKER"); blockers.push(`${beat.section.id}: selected media rights require review.`); }
+        if (asset.rightsStatus !== 'approved') blockers.push(`${beat.section.id}: selected media rights require review.`);
+        else blockers.push(...rightsEvidenceIssues(asset).map((issue) => `${beat.section.id}: ${issue}`));
         if (!asset.usable) blockers.push(`${beat.section.id}: selected media is technically unusable.`);
+        blockers.push(...assetMetadataIssues(asset).map((issue) => `${beat.section.id}: ${issue}`));
       }
+      blockers.push(...validateBrollOperation(resolvedOperation, asset, { durationSeconds, section: beat.section }).map((issue) => `${beat.section.id}: ${issue}`));
     }
     if (resolvedOperation?.type === 'director-placeholder') {
       blockers.push(`${beat.section.id}: unresolved ${resolvedOperation.visualType} recommendation requires an approved renderer operation or Keep Pastor.`);

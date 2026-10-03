@@ -42,6 +42,12 @@ export const productClient = {
     const action = stage === 'transcript' ? 'transcribe' : stage === 'director' ? 'analyze' : stage;
     return (await request<{ job: ProductJob }>(`/api/projects/${projectId}/${action}`, { method: 'POST' })).job;
   },
+  rerender: async (projectId: string, reason: string) =>
+    (await request<{ job: ProductJob }>(`/api/projects/${projectId}/rerender`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    })).job,
   reviewWorkspace: (projectId: string) => request<ReviewDataPayload>(`/api/projects/${projectId}/review-workspace`),
   saveReview: async (projectId: string, review: ReviewState) =>
     (await request<{ project: ProductProjectRecord }>(`/api/projects/${projectId}/review`, {

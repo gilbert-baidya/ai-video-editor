@@ -130,6 +130,7 @@ const asset: MediaAsset = {
   rightsBasis: 'owned',
   libraryRootId: 'fixture',
   libraryPolicyVersion: '1',
+  contentHash: 'a'.repeat(64),
   usable: true,
   unusableReasons: [],
 };

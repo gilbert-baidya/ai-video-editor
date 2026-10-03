@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import type { EditOperation } from './contracts.ts';
-import { applyReviewAction, isReviewStateCompatible, updateReview, type ReviewAction, type ReviewBeat, type ReviewState, type ReviewWorkspaceData } from './director-review.ts';
+import { applyReviewAction, buildBrollReplacementOperation, isReviewStateCompatible, updateReview, type ReviewAction, type ReviewBeat, type ReviewState, type ReviewWorkspaceData } from './director-review.ts';
 import { summarizeReviewWorkspace } from './editorial-quality.ts';
 
 export interface ReviewDataPayload extends ReviewWorkspaceData {
@@ -52,6 +52,7 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
   const [editingText, setEditingText] = useState(false);
   const [draftText, setDraftText] = useState(approvedText ?? section.suggestedDisplayText ?? '');
   const [replaceMode, setReplaceMode] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | undefined>();
   return <article className={`decision-card ${selected ? 'selected' : ''} status-${decision.status}`} onClick={onSelect}>
     <div className="card-top"><div><span className="time-code">{time(section.start)}—{time(section.end)}</span><span className="type-label">{section.type}</span></div><span className={`status status-${decision.status}`}>{statusLabel[decision.status]}</span></div>
     <h3>{bn(section.suggestedDisplayText ?? section.transcriptText.slice(0, 54))}</h3>
@@ -72,26 +73,16 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
       <button className="quiet" onClick={() => onAction('accept')}>Preview</button>
     </div>
     {replaceMode && isBroll && <div className="replace-picker"><small>REPLACE FROM INDEXED, RIGHTS-SAFE MEDIA</small>{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).map((candidate) => <button key={candidate.assetId} onClick={() => {
-      setReplaceMode(false);
-      const original = beat.originalOperation;
-      const operation: EditOperation = original?.type === 'broll'
-        ? { ...original, assetId: candidate.assetId }
-        : {
-          id: `broll-${section.id}`,
-          type: 'broll',
-          sourceStart: 0,
-          sourceEnd: Math.min(candidate.asset?.durationSeconds ?? section.end - section.start, section.end - section.start),
-          start: section.start,
-          end: section.end,
-          assetId: candidate.assetId,
-          visualType: original && 'visualType' in original ? (original.visualType as any) : undefined,
-          mode: 'full-screen',
-          muted: true,
-          reason: `Human selected ${candidate.asset?.fileName} for the Director B-roll recommendation.`,
-          confidence: section.confidence,
-        };
-      onAction('replace-broll', { operation, reason: `Selected ${candidate.asset?.fileName} from the indexed eligible candidate list.` });
-    }}>Use {candidate.asset?.fileName}</button>)}{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).length === 0 && <span>No eligible local replacement is available.</span>}</div>}
+      if (!candidate.asset) return;
+      try {
+        const operation = buildBrollReplacementOperation(beat, candidate.asset, `Selected ${candidate.asset.fileName} from the indexed eligible candidate list.`);
+        setReplaceMode(false);
+        setReplaceError(undefined);
+        onAction('replace-broll', { operation, reason: operation.reason });
+      } catch (error) {
+        setReplaceError(error instanceof Error ? error.message : String(error));
+      }
+    }}>Use {candidate.asset?.fileName}</button>)}{beat.candidates.filter((candidate) => candidate.eligible && candidate.asset).length === 0 && <span>No eligible local replacement is available.</span>}{replaceError && <span className="replace-error" role="alert">{replaceError}</span>}</div>}
     <CandidateInspector beat={beat} data={data} />
   </article>;
 }
