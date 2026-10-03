@@ -27,8 +27,16 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
     const sourceMediaAssets = workspace.mediaIndex.assets.filter((asset) => referencedIds.has(asset.id));
     const missingIds = [...referencedIds].filter((id) => !sourceMediaAssets.some((asset) => asset.id === id));
     if (missingIds.length) throw new Error(`Approved B-roll asset(s) missing from the media index: ${missingIds.join(', ')}.`);
+    const { discoverCapabilities } = await import('./product-capabilities.ts');
+    const capabilities = await discoverCapabilities({ root: appRoot });
+    const { probeSource } = await import('./source-ingestion.ts');
+    const probedSource = await probeSource(sourcePath, capabilities.ffprobe);
+    const actualDuration = probedSource.durationSeconds;
     const durationSeconds = record.sourceMetadata?.durationSeconds;
     if (!durationSeconds || durationSeconds <= 0) throw new Error('Source duration must be known before rendering.');
+    if (actualDuration && actualDuration > 0 && Math.abs(durationSeconds - actualDuration) > 0.5) {
+      throw new Error(`SOURCE_DURATION_MISMATCH: Approved plan timeline relies on ${durationSeconds} seconds of media, but physical source is ${actualDuration} seconds.`);
+    }
     const mediaAssets: MediaAsset[] = [];
     for (const asset of sourceMediaAssets) {
       const assetIssues = await verifyAssetOnDisk(asset);
@@ -66,8 +74,7 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       output = await stat(tempOutputPath);
       if (output.size === 0) throw new Error('Render produced a zero-byte file.');
 
-      const { discoverCapabilities } = await import('./product-capabilities.ts');
-      const capabilities = await discoverCapabilities({ root: appRoot });
+
       const ffprobePath = capabilities.ffprobe.state === 'AVAILABLE' ? capabilities.ffprobe.detail.split(' is available.')[0] : 'ffprobe';
       integrity = await validateMediaIntegrity(tempOutputPath, ffprobePath, record.workflow.render.format, { expectedDurationSeconds: durationSeconds });
       if (!integrity.passed) throw new Error(`Media integrity validation failed: ${integrity.failures.join(' ')}`);
