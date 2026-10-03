@@ -14,7 +14,7 @@ import { loadEnv } from './env.ts';
 
 const appRoot = resolve(import.meta.dirname, '..');
 loadEnv(appRoot);
-const runtimeRoot = resolve(appRoot, '.runtime', 'projects');
+const runtimeRoot = process.env.PRODUCT_RUNTIME_ROOT ? resolve(process.env.PRODUCT_RUNTIME_ROOT) : resolve(appRoot, '.runtime', 'projects');
 const store = new ProductProjectStore(runtimeRoot);
 const orchestrator = new ProductOrchestrator(store, appRoot, { render: createRemotionRenderAdapter(appRoot) });
 const port = Number(process.env.PRODUCT_PORT ?? 4173);
@@ -39,10 +39,10 @@ async function bodyJson<T>(request: IncomingMessage, limit = 1_000_000): Promise
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
 }
 
-async function streamManagedFile(response: ServerResponse, request: IncomingMessage, path: string): Promise<void> {
+async function streamManagedFile(response: ServerResponse, request: IncomingMessage, path: string, mimeType?: string): Promise<void> {
   const info = await stat(path);
   const range = request.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
-  const contentType = extname(path) === '.mov' ? 'video/quicktime' : 'video/mp4';
+  const contentType = mimeType ?? (extname(path) === '.mov' ? 'video/quicktime' : 'video/mp4');
   if (!range) {
     response.writeHead(200, { 'content-type': contentType, 'content-length': info.size, 'accept-ranges': 'bytes' });
     createReadStream(path).pipe(response);
@@ -100,6 +100,14 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const relativePath = action === 'source' ? project.sourceMetadata?.relativePath : project.artifacts.render;
     if (!relativePath) throw new Error(`${action} artifact is unavailable.`);
     await streamManagedFile(response, request, assertWithinRoot(store.projectDirectory(projectId), resolve(store.projectDirectory(projectId), relativePath)));
+  } else if (request.method === 'GET' && action === 'asset') {
+    // Serves only media that the project's own review workspace indexes and that lives inside the project directory.
+    const assetId = url.searchParams.get('assetId');
+    if (!assetId) throw new Error('assetId query parameter is required.');
+    const workspace = await bodyFromFile<{ mediaIndex?: { assets?: Array<{ id: string; path: string; mimeType: string }> } }>(resolve(store.artifactDirectory(projectId), 'review-workspace.json'));
+    const asset = workspace.mediaIndex?.assets?.find((candidate) => candidate.id === assetId);
+    if (!asset) throw new Error(`Project not found: asset ${assetId} is not indexed for this project.`);
+    await streamManagedFile(response, request, assertWithinRoot(store.projectDirectory(projectId), resolve(asset.path)), asset.mimeType);
   } else if (request.method === 'PUT' && action === 'source') {
     const project = await store.get(projectId);
     if (project.workflow.source.type !== 'local-video') throw new Error('Binary upload is only valid for local-video projects.');

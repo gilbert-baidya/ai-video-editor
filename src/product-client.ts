@@ -1,4 +1,5 @@
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
+import type { MediaAsset } from './contracts.ts';
 import type { ReviewState } from './director-review.ts';
 import type { CreateProjectRequest, ProductCapabilities, ProductJob, ProductProjectRecord } from './product-api.ts';
 import type { ProductStage } from './product-workflow.ts';
@@ -48,6 +49,11 @@ export const productClient = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reason }),
     })).job,
+  importAsset: (projectId: string, input: { path: string; description: string; rightsStatus: 'approved' | 'unknown' | 'restricted'; rightsBasis: 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown'; rightsNote?: string }) =>
+    request<MediaAsset>(`/api/projects/${projectId}/assets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }),
+  sourceUrl: (projectId: string) => `/api/projects/${projectId}/source`,
+  outputUrl: (projectId: string) => `/api/projects/${projectId}/output`,
+  assetUrl: (projectId: string, assetId: string) => `/api/projects/${projectId}/asset?assetId=${encodeURIComponent(assetId)}`,
   reviewWorkspace: (projectId: string) => request<ReviewDataPayload>(`/api/projects/${projectId}/review-workspace`),
   saveReview: async (projectId: string, review: ReviewState) =>
     (await request<{ project: ProductProjectRecord }>(`/api/projects/${projectId}/review`, {

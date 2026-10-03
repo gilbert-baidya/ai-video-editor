@@ -118,7 +118,7 @@ export interface ReviewedWorkspaceData extends ReviewWorkspaceData {
   readiness: ReviewReadiness;
 }
 
-function operationBeatId(operation: EditOperation): string | undefined {
+export function operationBeatId(operation: EditOperation): string | undefined {
   if (operation.type === 'broll') return operation.id.replace(/^broll-/, '');
   if (operation.id.startsWith('policy-')) return operation.id.replace(/^policy-/, '');
   if (operation.id.startsWith('visual-')) return operation.id.replace(/^visual-/, '');

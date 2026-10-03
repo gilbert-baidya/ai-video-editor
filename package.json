@@ -28,6 +28,8 @@
     "test-editorial-quality-v1-3-1": "tsx scripts/test-editorial-quality-v1-3-1.ts",
     "test-director-editorial-enrichment-v1-3-2": "tsx scripts/test-director-editorial-enrichment-v1-3-2.ts",
     "dev:product": "tsx src/product-server.ts",
+    "seed-editor-fixture": "tsx scripts/seed-editor-fixture.ts",
+    "dev:product:fixture": "PRODUCT_RUNTIME_ROOT=.runtime/ui-fixture/projects tsx src/product-server.ts",
     "prove-sol-foundation-fixes": "tsx scripts/prove-sol-foundation-fixes.ts",
     "test-tokenization": "tsx scripts/test-tokenization.ts",
     "typecheck": "tsc --noEmit",
@@ -42,7 +44,8 @@
     "test-broll-review-timing-v1-3-8": "tsx scripts/test-broll-review-timing-v1-3-8.ts",
     "test-media-import-v1-3-8": "tsx scripts/test-media-import-v1-3-8.ts",
     "test-safe-rerender-v1-3-8": "tsx scripts/test-safe-rerender-v1-3-8.ts",
-    "test-replacement-workflow-v1-3-8": "tsx scripts/test-replacement-workflow-v1-3-8.ts"
+    "test-replacement-workflow-v1-3-8": "tsx scripts/test-replacement-workflow-v1-3-8.ts",
+    "test-editing-workspace": "tsx scripts/test-editing-workspace.tsx"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

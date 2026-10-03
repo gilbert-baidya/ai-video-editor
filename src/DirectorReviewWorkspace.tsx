@@ -90,9 +90,13 @@ function DecisionCard({ beat, data, decision, selected, onSelect, onAction }: { 
 export const DirectorReviewWorkspace: React.FC<{
   data: ReviewDataPayload;
   onReviewStateChange?: (review: ReviewState, ready: boolean) => void;
-}> = ({ data, onReviewStateChange }) => {
+  initialBeatId?: string;
+  // When true the persisted server review is the only source of truth (no browser-local draft).
+  serverStateOnly?: boolean;
+}> = ({ data, onReviewStateChange, initialBeatId, serverStateOnly = false }) => {
   const playerRef = useRef<HTMLVideoElement>(null);
   const [review, setReview] = useState<ReviewState>(() => {
+    if (serverStateOnly) return data.initialReview;
     try {
       const saved = window.localStorage.getItem(`director-review:${data.projectId}`);
       if (saved) {
@@ -102,11 +106,11 @@ export const DirectorReviewWorkspace: React.FC<{
     } catch { /* Corrupt or unavailable browser storage falls back to the persisted initial state. */ }
     return data.initialReview;
   });
-  const [selectedId, setSelectedId] = useState('section-3');
+  const [selectedId, setSelectedId] = useState(initialBeatId ?? 'section-3');
   const [filter, setFilter] = useState('All');
   const [showControl, setShowControl] = useState(false);
   const [previewTime, setPreviewTime] = useState(60);
-  React.useEffect(() => { try { window.localStorage.setItem(`director-review:${data.projectId}`, JSON.stringify(review)); } catch { /* Persistence is best-effort in restricted preview contexts. */ } }, [data.projectId, review]);
+  React.useEffect(() => { if (serverStateOnly) return; try { window.localStorage.setItem(`director-review:${data.projectId}`, JSON.stringify(review)); } catch { /* Persistence is best-effort in restricted preview contexts. */ } }, [data.projectId, review]);
   const resolved = useMemo(() => updateReview(data, review), [data, review]);
   React.useEffect(() => {
     onReviewStateChange?.(review, resolved.readiness.ready);

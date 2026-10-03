@@ -1,7 +1,8 @@
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, Video, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 import { resolveFrameVisuals } from './broll-layout.ts';
-import type { EditPlan, GraphicRegion, MediaAsset, SpeakerPosition } from './contracts.ts';
+import type { EditPlan, GraphicRegion, MediaAsset } from './contracts.ts';
+import { positionStyle } from './speaker-framing.ts';
 import { resolvedOperationFontSize } from './render-presentation.ts';
 import { defaultVideoFormatProfile, type VideoFormatProfile } from './video-format.ts';
 
@@ -12,13 +13,6 @@ export interface FoundationProps extends Record<string, unknown> {
   durationSeconds?: number;
   mediaAssets?: MediaAsset[];
   videoFormat?: VideoFormatProfile;
-}
-
-function positionStyle(position: SpeakerPosition | 'center'): React.CSSProperties {
-  if (position === 'left') return { transform: 'translateX(-7%) scale(1.08)' };
-  if (position === 'right') return { transform: 'translateX(7%) scale(1.08)' };
-  if (position === 'punch-in') return { transform: 'scale(1.12)' };
-  return {};
 }
 
 function regionStyle(region: GraphicRegion | undefined): React.CSSProperties {
