@@ -41,10 +41,11 @@ export function validateExtractedShorts(shorts: ExtractedShort[], input: ShortsE
     }
     const first = input.segments[indices[0]];
     const last = input.segments[indices.at(-1)!];
-    const duration = last.end - first.start;
+    const duration = short.sourceEndSeconds - short.sourceStartSeconds;
     if (!Number.isFinite(short.sourceStartSeconds) || !Number.isFinite(short.sourceEndSeconds)
-      || Math.abs(short.sourceStartSeconds - first.start) > 0.01 || Math.abs(short.sourceEndSeconds - last.end) > 0.01) {
-      errors.push(`Short ${short.title} has inconsistent source boundaries.`);
+      || short.sourceStartSeconds < first.start - 0.01 || short.sourceStartSeconds >= short.sourceEndSeconds
+      || short.sourceEndSeconds > last.end + 0.01) {
+      errors.push(`Short ${short.title} has inconsistent or out-of-segment source boundaries.`);
     }
     if (duration < 30 || duration > 120) errors.push(`Short ${short.title} is ${duration.toFixed(2)} seconds; allowed duration is 30–120 seconds.`);
     if (!Number.isFinite(short.durationEstimateSeconds) || Math.abs(short.durationEstimateSeconds - duration) > 0.25) {

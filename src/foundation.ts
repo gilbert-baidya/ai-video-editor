@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import type {
   ArtifactDependency,
   EditPlan,
+  LanguageProfile,
   Job,
   Project,
   QAResult,
@@ -13,7 +14,7 @@ import type {
   TranscriptSegment,
   TranscriptWord,
 } from './contracts.ts';
-import { measureTranscriptIntegrity } from './transcript-integrity.ts';
+import { measureTranscriptIntegrity, transcriptQualityFailures } from './transcript-integrity.ts';
 import { sha256Node } from './sha256-node.ts';
 
 const exec = promisify(execFile);
@@ -85,6 +86,7 @@ export async function extractAudio(source: string, output: string): Promise<void
 }
 
 interface WhisperJson {
+  result?: { language?: string };
   transcription?: Array<{ offsets?: { from: number; to: number }; timestamps?: { from: string; to: string }; text?: string; tokens?: Array<{ offsets?: { from: number; to: number }; text?: string; p?: number }> }>;
 }
 
@@ -94,17 +96,50 @@ const timestamp = (value: string | undefined): number => {
   return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : Number(value);
 };
 
-function toBengaliScript(text: string): string {
-  const clean = text.replace(/[\u0C00-\u0D7F]+/g, '').replace(/(.{1,6})\1{4,}/gu, '');
-  return [...clean].map((c) => {
-    const code = c.charCodeAt(0);
-    return code >= 0x0900 && code <= 0x097F ? String.fromCharCode(code + 0x80) : c;
-  }).join('').replace(/[\u0000-\u001f\ufffd]/g, '').normalize('NFC').trim();
+export function normalizeWhisperText(text: string): string {
+  return text.replace(/[\u0000-\u001f]/g, '').normalize('NFC').trim();
 }
 
-export async function transcribeAndAlign(audio: string, outputBase: string, model: string): Promise<TranscriptDocument> {
-  await run('/opt/homebrew/bin/whisper-cli', ['-m', model, '-f', audio, '-oj', '-ojf', '-l', 'bn', '-of', outputBase]);
-  const raw = await readJson<WhisperJson>(`${outputBase}.json`);
+function whisperFailureText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const output = error as Error & { stderr?: string | Buffer; stdout?: string | Buffer };
+  return [error.message, output.stderr?.toString(), output.stdout?.toString()].filter(Boolean).join('\n');
+}
+
+function isGpuAllocationFailure(error: unknown): boolean {
+  return /(?:metal|gpu).{0,100}(?:allocat|memory|buffer|out of memory|failed)|(?:allocat|memory|buffer).{0,100}(?:metal|gpu)/iu.test(whisperFailureText(error));
+}
+
+function languageForText(text: string): LanguageProfile {
+  const hasBengali = /[\u0980-\u09ff]/u.test(text);
+  const hasLatin = /[A-Za-z]/u.test(text);
+  return hasBengali && hasLatin ? 'mixed' : hasBengali ? 'bn' : hasLatin ? 'en' : 'mixed';
+}
+
+export async function transcribeAndAlign(
+  audio: string,
+  outputBase: string,
+  model: string,
+  language = process.env.WHISPER_LANGUAGE ?? 'auto',
+): Promise<TranscriptDocument> {
+  if (!model.trim()) throw new Error('Transcription requires WHISPER_MODEL to point to a local multilingual Whisper model.');
+  if (!['auto', 'bn', 'en'].includes(language)) throw new Error(`Unsupported WHISPER_LANGUAGE "${language}". Use auto, bn, or en.`);
+  if (language !== 'en' && /\.en(?:\.|$)/iu.test(model)) {
+    throw new Error('The configured English-only Whisper model cannot transcribe Bengali or mixed-language speech. Configure a multilingual model in WHISPER_MODEL.');
+  }
+  const args = ['-m', model, '-f', audio, '-oj', '-ojf', '-l', language];
+  let rawPath = `${outputBase}.json`;
+  try {
+    await run('/opt/homebrew/bin/whisper-cli', [...args, '-of', outputBase]);
+  } catch (error) {
+    if (!isGpuAllocationFailure(error)) throw error;
+    const cpuOutputBase = `${outputBase}.cpu-retry`;
+    await run('/opt/homebrew/bin/whisper-cli', [...args, '-ng', '-of', cpuOutputBase]);
+    rawPath = `${cpuOutputBase}.json`;
+  }
+  const raw = await readJson<WhisperJson>(rawPath);
+  const detectedLanguage = raw.result?.language ?? language;
+  const normalize = (text: string): string => normalizeWhisperText(text);
   const rawItems: Array<{ offsets?: { from: number; to: number }; timestamps?: { from: string; to: string }; text?: string; tokens?: Array<{ offsets?: { from: number; to: number }; text?: string; p?: number }> }> = [];
   for (const item of (raw.transcription ?? [])) {
     const start = item.offsets ? item.offsets.from / 1000 : timestamp(item.timestamps?.from);
@@ -125,7 +160,7 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
     const end = item.offsets ? item.offsets.to / 1000 : timestamp(item.timestamps?.to);
     let cursor = start;
     const words: TranscriptWord[] = (item.tokens ?? []).filter((token) => {
-      const text = toBengaliScript(token.text?.trim() ?? '');
+      const text = normalize(token.text?.trim() ?? '');
       return text.length > 0 && !ignoredWhisperTokens.has(text);
     }).map((token, tokenIndex) => {
       const rawStart = token.offsets ? token.offsets.from / 1000 : start;
@@ -133,7 +168,7 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
       const wordStart = Math.max(cursor, Math.min(rawStart, end));
       const wordEnd = Math.max(wordStart, Math.min(rawEnd, end));
       cursor = wordEnd;
-      const text = toBengaliScript(token.text?.trim() ?? '');
+      const text = normalize(token.text?.trim() ?? '');
       return {
         id: `word-${index + 1}-${tokenIndex + 1}`,
         text,
@@ -143,7 +178,7 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
         rawStart,
         rawEnd,
         confidence: token.p,
-        language: 'bn' as const,
+        language: languageForText(text),
         normalizationApplied: wordStart !== rawStart || wordEnd !== rawEnd,
       };
     }).filter((word) => word.text.length > 0);
@@ -151,18 +186,31 @@ export async function transcribeAndAlign(audio: string, outputBase: string, mode
       id: `segment-${index + 1}`,
       start,
       end,
-      text: toBengaliScript(item.text?.trim() ?? ''),
-      language: 'bn' as const,
+      text: normalize(item.text?.trim() ?? ''),
+      language: languageForText(normalize(item.text?.trim() ?? '')),
       words,
     };
   }).filter((segment) => segment.text.length > 0);
   const segments: TranscriptSegment[] = rawSegments.map((segment, index) => ({ ...segment, id: `segment-${index + 1}` }));
   const originalTranscript = segments.map((segment) => segment.text).join(' ').trim();
+  const hasBengaliText = segments.some((segment) => segment.language === 'bn' || segment.language === 'mixed');
+  const hasEnglishText = segments.some((segment) => segment.language === 'en' || segment.language === 'mixed');
+  const transcriptLanguage: LanguageProfile = hasBengaliText && hasEnglishText
+    ? 'mixed'
+    : hasBengaliText
+      ? 'bn'
+      : detectedLanguage === 'bn'
+        ? 'bn'
+        : hasEnglishText
+          ? 'en'
+          : 'mixed';
   const hasUsableWords = segments.some((segment) => segment.words.some((word) => word.end > word.start));
+  const qualityFailures = transcriptQualityFailures(originalTranscript, segments, transcriptLanguage);
+  if (qualityFailures.length) throw new Error(`Transcription quality failed. ${qualityFailures.join(' ')}`);
   return {
     schemaVersion: '1.0', projectId: 'foundation-sample', originalTranscript,
     aiSuggestedDisplayText: originalTranscript, approvedDisplayText: originalTranscript,
-    language: 'bn', textSource: 'local-asr', transcriptionProvider: 'whisper.cpp', transcriptionModel: model,
+    language: transcriptLanguage, textSource: 'local-asr', transcriptionProvider: 'whisper.cpp', transcriptionModel: model,
     approved: false, timingConfidence: 'review', source: 'whisper-cli', model, segments, immutableOriginal: true,
     alignment: {
       provider: 'whisper-cli-token-timestamps',

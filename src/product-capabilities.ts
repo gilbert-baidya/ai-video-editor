@@ -4,7 +4,7 @@ import { GeminiDirectorProvider } from "./director-gemini.ts";
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import type { ProductCapabilities, ProductCapability } from './product-api.ts';
 import { OllamaDirectorProvider } from './director.ts';
 
@@ -49,9 +49,25 @@ export async function discoverCapabilities(options: CapabilityOptions): Promise<
   const directorAvailability = await provider.checkAvailability?.() ?? { available: true, checkedAt: new Date().toISOString() };
   const model = process.env.WHISPER_MODEL ? resolve(options.root, process.env.WHISPER_MODEL) : undefined;
   const modelAvailable = model ? await access(model).then(() => true, () => false) : false;
-  const transcription: ProductCapability = whisper.state === 'AVAILABLE' && ffmpeg.state === 'AVAILABLE' && modelAvailable
-    ? { state: 'AVAILABLE', detail: 'Whisper CLI, FFmpeg, and the configured model are available.' }
-    : { state: 'NOT_CONFIGURED', detail: 'Transcription requires FFmpeg, whisper-cli, and WHISPER_MODEL. No runtime was installed.' };
+  const language = process.env.WHISPER_LANGUAGE ?? 'auto';
+  const englishOnlyModel = model ? /\.en(?:\.|$)/iu.test(basename(model)) : false;
+  let transcriptionIssue = !['auto', 'bn', 'en'].includes(language)
+    ? `WHISPER_LANGUAGE "${language}" is unsupported; use auto, bn, or en.`
+    : englishOnlyModel && language !== 'en'
+      ? 'The configured English-only Whisper model cannot transcribe Bengali or mixed-language speech. Configure a multilingual model in WHISPER_MODEL.'
+      : undefined;
+
+  // Cloud fallback overrides local constraints
+  if (process.env.GEMINI_API_KEY) {
+    transcriptionIssue = undefined;
+  }
+
+  const transcription: ProductCapability = (whisper.state === 'AVAILABLE' && ffmpeg.state === 'AVAILABLE' && modelAvailable && !transcriptionIssue) || (ffmpeg.state === 'AVAILABLE' && process.env.GEMINI_API_KEY)
+    ? { state: 'AVAILABLE', detail: process.env.GEMINI_API_KEY ? `Cloud ASR (${process.env.GEMINI_ASR_MODEL || 'gemini-3.1-pro-preview'}) is available.` : `Whisper CLI, FFmpeg, and the configured model are available (language: ${language}).` }
+    : {
+      state: 'NOT_CONFIGURED',
+      detail: transcriptionIssue ?? 'Transcription requires FFmpeg, whisper-cli, and an existing local model configured with WHISPER_MODEL. No runtime was installed.',
+    };
   return {
     checkedAt: new Date().toISOString(),
     node: { state: 'AVAILABLE', detail: 'The local product host is running.', version: process.version },

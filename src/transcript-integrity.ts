@@ -1,7 +1,7 @@
 import type { TranscriptSegment, TranscriptSentence } from './contracts.ts';
 
-const bengaliRange = /[\u0980-\u09ff]/u;
-const devanagariRange = /[\u0900-\u097f]/u;
+const bengaliScript = /\p{Script=Bengali}/u;
+const devanagariScript = /\p{Script=Devanagari}/u;
 const latinRange = /[A-Za-z]/u;
 
 export interface TranscriptIntegrityMetrics {
@@ -14,6 +14,7 @@ export interface TranscriptIntegrityMetrics {
   replacementCharacters: number;
   malformedUnicode: number;
   emptySegments: number;
+  foreignLanguagePlaceholderCount: number;
   repeatedPhraseCount: number;
   suspiciousScriptSwitches: number;
   BengaliPercentage: number;
@@ -36,7 +37,15 @@ export function measureTranscriptIntegrity(text: string, segments: Array<{ text:
   let suspiciousScriptSwitches = 0;
   let previousScript = '';
   for (const character of text.normalize('NFC')) {
-    const script = bengaliRange.test(character) ? 'Bengali' : devanagariRange.test(character) ? 'Devanagari' : latinRange.test(character) ? 'Latin' : isLetter(character) ? 'unknown' : '';
+    const script = bengaliScript.test(character) && isLetter(character)
+      ? 'Bengali'
+      : devanagariScript.test(character) && isLetter(character)
+        ? 'Devanagari'
+        : latinRange.test(character) && isLetter(character)
+          ? 'Latin'
+          : isLetter(character)
+            ? 'unknown'
+            : '';
     if (script) {
       counts[script as keyof typeof counts] += 1;
       if (previousScript && previousScript !== script) suspiciousScriptSwitches += 1;
@@ -45,8 +54,15 @@ export function measureTranscriptIntegrity(text: string, segments: Array<{ text:
   }
   const letters = counts.Bengali + counts.Devanagari + counts.Latin + counts.unknown;
   const repeatedPhraseCount = (text.match(/(.{3,24})\1{2,}/gu) ?? []).length;
+  const foreignLanguagePlaceholderCount = segments.filter((segment) =>
+    /\(\s*speaking in (?:a )?foreign language\s*\)|\[\s*foreign language\s*\]/iu.test(segment.text),
+  ).length;
   const unexpectedIndic = counts.Devanagari;
-  const status = unexpectedIndic > 0 || counts.unknown > 0 || text.includes('\ufffd') || repeatedPhraseCount > 0 ? 'REVIEW' : 'PASS';
+  const status = foreignLanguagePlaceholderCount > 0
+    ? 'FAIL'
+    : unexpectedIndic > 0 || counts.unknown > 0 || text.includes('\ufffd') || repeatedPhraseCount > 0
+      ? 'REVIEW'
+      : 'PASS';
   return {
     characters: text.length,
     ...counts,
@@ -54,6 +70,7 @@ export function measureTranscriptIntegrity(text: string, segments: Array<{ text:
     malformedUnicode: [...text].filter((character) => character === '\ufffd').length,
     replacementCharacters: text.split('\ufffd').length - 1,
     emptySegments: segments.filter((segment) => !segment.text.trim()).length,
+    foreignLanguagePlaceholderCount,
     repeatedPhraseCount,
     suspiciousScriptSwitches,
     BengaliPercentage: percentage(counts.Bengali, letters),
@@ -62,6 +79,31 @@ export function measureTranscriptIntegrity(text: string, segments: Array<{ text:
     unknownPercentage: percentage(counts.unknown, letters),
     status,
   };
+}
+
+export function transcriptQualityFailures(
+  text: string,
+  segments: Array<{ text: string }>,
+  language: string,
+): string[] {
+  const failures: string[] = [];
+  const metrics = measureTranscriptIntegrity(text, segments);
+  if (!segments.length || !text.trim()) failures.push('TRANSCRIPTION_EMPTY: Whisper did not produce usable transcript text.');
+  if (metrics.foreignLanguagePlaceholderCount) {
+    failures.push('TRANSCRIPTION_PLACEHOLDER: Generic foreign-language placeholders were detected; AI analysis and captions are blocked.');
+  }
+  if (metrics.malformedUnicode) {
+    failures.push('TRANSCRIPTION_MALFORMED_UNICODE: Replacement characters were detected; text integrity is not safe for analysis or captions.');
+  }
+  if (metrics.Devanagari > 0) {
+    failures.push('TRANSCRIPTION_SCRIPT_MISMATCH: Devanagari ASR output cannot be treated as Bengali text; the original transcription must use the accurate native script.');
+  } else if (metrics.status === 'REVIEW' && !metrics.malformedUnicode) {
+    failures.push('TRANSCRIPTION_QUALITY_REVIEW: Transcript contains suspicious script, Unicode, or repeated-text output and requires a reliable transcription before analysis.');
+  }
+  if (language === 'bn' && metrics.Bengali === 0) {
+    failures.push('TRANSCRIPTION_BENGALI_MISSING: Bengali was expected, but no Bengali-script text was produced.');
+  }
+  return [...new Set(failures)];
 }
 
 function splitSentences(text: string): string[] {

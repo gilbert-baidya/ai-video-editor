@@ -5,12 +5,14 @@ import { renderMedia, selectComposition } from '@remotion/renderer';
 import type { EditPlan } from './contracts.ts';
 import type { ProductStageAdapters } from './product-orchestrator.ts';
 import type { FinalQaSummary } from './product-workflow.ts';
-import type { MediaAsset, SermonAnalysis } from './contracts.ts';
+import type { MediaAsset, SermonAnalysis, TranscriptDocument } from './contracts.ts';
 import type { ReviewDataPayload } from './DirectorReviewWorkspace.tsx';
 import { createRendererPlan, evaluateEditorialQuality } from './editorial-quality.ts';
 import { validateMediaIntegrity, verifyAudioContinuity } from './media-integrity.ts';
 import { verifyAssetOnDisk } from './media-import.ts';
 import { SOURCE_DURATION_TOLERANCE_SECONDS, planEndSeconds, sourceDurationMismatchDiagnostic, validatePlanTiming } from './source-duration.ts';
+import { correctShortBoundaries } from './features/shorts/boundary-validator.ts';
+import type { ExtractedShort } from './features/shorts/shorts-model.ts';
 
 export function createRemotionRenderAdapter(appRoot: string): NonNullable<ProductStageAdapters['render']> {
   return async (record, sourcePath, outputPath, payload?: any) => {
@@ -20,20 +22,20 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
     let shortStart = 0;
     let shortEnd = 60;
     let plan: EditPlan;
+    let approvedShort: ExtractedShort | undefined;
+    let approvedTranscript: TranscriptDocument | undefined;
 
     if (isShort) {
       const state = record.workflow.shorts?.[payload.shortId];
       if (state?.approvalStatus !== 'approved') throw new Error('Render requires an individually approved Short.');
-      const short = workspace.shorts?.find((s: any) => s.id === payload.shortId);
+      const short = workspace.shorts?.find((s: ExtractedShort) => s.id === payload.shortId);
       if (!short) throw new Error('Requested short was not found in the workspace.');
       if (!record.artifacts.transcript) throw new Error('Canonical transcript artifact is required for a Short render.');
       const transcriptPath = resolve(record.workflow.projectId ? resolve(outputPath, '../..') : '', record.artifacts.transcript!);
-      const transcript = JSON.parse(await readFile(transcriptPath, 'utf8'));
-      const firstSeg = transcript.segments.find((s: any) => s.id === short.sourceSegmentIds[0]);
-      const lastSeg = transcript.segments.find((s: any) => s.id === short.sourceSegmentIds[short.sourceSegmentIds.length - 1]);
-      if (!firstSeg || !lastSeg) throw new Error('The approved Short references transcript segments that no longer exist.');
-      shortStart = firstSeg.start;
-      shortEnd = lastSeg.end;
+      approvedTranscript = JSON.parse(await readFile(transcriptPath, 'utf8')) as TranscriptDocument;
+      approvedShort = short;
+      shortStart = short.sourceStartSeconds;
+      shortEnd = short.sourceEndSeconds;
       plan = {
         schemaVersion: '2.0',
         projectId: record.workflow.projectId,
@@ -41,7 +43,7 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
         status: 'approved',
         createdBy: { provider: 'human-approved-short', model: workspace.directorExecution?.model ?? 'unknown' },
         operations: short.sourceSegmentIds.map((id: string, i: number): any => {
-        const seg = transcript.segments.find((s: any) => s.id === id);
+        const seg = approvedTranscript?.segments.find((segment) => segment.id === id);
         if (!seg) return null;
         return {
           id: `caption-${i}`,
@@ -67,6 +69,13 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
     const probedSource = await probeSource(sourcePath, capabilities.ffprobe);
     const durationSeconds = Number(probedSource.durationSeconds);
     if (!(durationSeconds > 0)) throw new Error('Source duration must be known before rendering.');
+    if (isShort && approvedShort && approvedTranscript) {
+      const verified = correctShortBoundaries(approvedShort, approvedTranscript, durationSeconds);
+      if (Math.abs(verified.sourceStartSeconds - shortStart) > 0.01
+        || Math.abs(verified.sourceEndSeconds - shortEnd) > 0.01) {
+        throw new Error('The approved Short boundaries no longer match the complete-speech validation.');
+      }
+    }
     if (isShort && (shortStart < 0 || shortEnd <= shortStart || shortEnd > durationSeconds + SOURCE_DURATION_TOLERANCE_SECONDS)) {
       throw new Error(`Short source range ${shortStart.toFixed(3)}–${shortEnd.toFixed(3)} exceeds the physical source duration ${durationSeconds.toFixed(3)}.`);
     }
@@ -121,7 +130,7 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
     
     const composition = await selectComposition({ serveUrl, id: compositionId, inputProps });
     const tempOutputPath = `${outputPath}.${process.pid}.tmp.mp4`;
-    await renderMedia({
+    const renderOptions = {
       composition,
       serveUrl,
       codec: 'h264',
@@ -130,7 +139,20 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       inputProps,
       x264Preset: 'veryfast',
       pixelFormat: 'yuv420p',
-    });
+    } as const;
+    try {
+      await renderMedia(renderOptions);
+    } catch (firstError) {
+      await rm(tempOutputPath, { force: true });
+      const message = firstError instanceof Error ? firstError.message : String(firstError);
+      console.warn(`Remotion render failed; retrying once at concurrency 1: ${message}`);
+      try {
+        await renderMedia({ ...renderOptions, concurrency: 1 });
+      } catch (secondError) {
+        const retryMessage = secondError instanceof Error ? secondError.message : String(secondError);
+        throw new Error(`Remotion render failed after one controlled retry: ${retryMessage}`, { cause: secondError });
+      }
+    }
     let output: Awaited<ReturnType<typeof stat>>;
     let integrity: Awaited<ReturnType<typeof validateMediaIntegrity>>;
     let audioContinuity: NonNullable<FinalQaSummary['audioContinuity']>;

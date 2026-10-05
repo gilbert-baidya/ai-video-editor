@@ -74,6 +74,10 @@ export const ShortsReviewScreen: React.FC<{
           const approved = state?.approvalStatus === 'approved';
           const exported = state?.renderStatus === 'completed' && state.output?.qaStatus === 'PASS';
           const sourcePreviewAvailable = Number.isFinite(short.sourceStartSeconds) && Number.isFinite(short.sourceEndSeconds) && short.sourceEndSeconds > short.sourceStartSeconds;
+          const boundaryAdjusted = short.aiSuggestedStartSeconds !== undefined
+            && short.aiSuggestedEndSeconds !== undefined
+            && (Math.abs(short.aiSuggestedStartSeconds - short.sourceStartSeconds) > 0.01
+              || Math.abs(short.aiSuggestedEndSeconds - short.sourceEndSeconds) > 0.01);
           const outputUrl = productClient.shortOutputUrl(projectId, short.id);
           return <article key={short.id} data-short-id={short.id} data-approval-status={state?.approvalStatus ?? 'pending'} data-render-status={state?.renderStatus ?? 'not-started'} className="clip-review-card" style={{ flexDirection: 'column', gap: 0, padding: 0, border: `1px solid ${approved ? 'var(--border-accent)' : 'var(--border-subtle)'}`, boxShadow: approved ? '0 0 16px rgba(99, 102, 241, 0.2)' : 'none' }}>
             <div style={{ position: 'relative', width: '100%', background: '#000', borderBottom: '1px solid var(--border-default)' }}>
@@ -100,6 +104,11 @@ export const ShortsReviewScreen: React.FC<{
                 <span className="tag-pill"><FilmIcon size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /> {short.durationEstimateSeconds.toFixed(1)}s duration</span>
                 <span className="tag-pill">Source: {formatTimecode(short.sourceStartSeconds)} - {formatTimecode(short.sourceEndSeconds)}</span>
               </div>
+              {boundaryAdjusted && <div className="ve-note" style={{ marginBottom: 16 }}>
+                <div>AI suggested: {formatTimecode(short.aiSuggestedStartSeconds!)}–{formatTimecode(short.aiSuggestedEndSeconds!)}</div>
+                <div>Adjusted for complete speech: {formatTimecode(short.sourceStartSeconds)}–{formatTimecode(short.sourceEndSeconds)}</div>
+                <div>Boundaries adjusted to preserve the complete thought.</div>
+              </div>}
               
               {state?.error && <div style={{ background: 'rgba(239,68,68,0.1)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.2)', color: '#FCA5A5', fontSize: '13px', marginBottom: '16px' }}>{state.error}</div>}
               {state?.output && <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginBottom: '16px' }}>Output: {state.output.width}×{state.output.height} · QA: {state.output.qaStatus}</div>}

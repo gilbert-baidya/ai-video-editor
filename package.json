@@ -45,6 +45,7 @@
     "test-media-import-v1-3-8": "tsx scripts/test-media-import-v1-3-8.ts",
     "test-shorts-workflow": "tsx scripts/test-shorts-workflow.ts",
     "test-source-duration-integrity-v1-3-9": "tsx scripts/test-source-duration-integrity-v1-3-9.ts",
+    "test-phase7b": "tsx scripts/test-phase7b.ts",
     "test-safe-rerender-v1-3-8": "tsx scripts/test-safe-rerender-v1-3-8.ts",
     "test-replacement-workflow-v1-3-8": "tsx scripts/test-replacement-workflow-v1-3-8.ts",
     "test-editing-workspace": "tsx scripts/test-editing-workspace.tsx"

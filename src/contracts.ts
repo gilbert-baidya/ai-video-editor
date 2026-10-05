@@ -2,7 +2,7 @@ export const FOUNDATION_SCHEMA_VERSION = '1.0';
 
 export type LanguageProfile = 'bn' | 'en' | 'mixed';
 
-export type TranscriptTextSource = 'local-asr' | 'existing-project' | 'manual' | 'hybrid-reviewed';
+export type TranscriptTextSource = 'local-asr' | 'cloud-asr' | 'existing-project' | 'manual' | 'hybrid-reviewed';
 export type TimingConfidence = 'word-safe' | 'sentence-safe' | 'segment-safe' | 'review';
 export type VisualIntensity = 'reverent-calm' | 'normal-teaching' | 'story-illustration' | 'emphasis';
 export type VisualRecommendation = 'speaker-full' | 'speaker-left' | 'speaker-right' | 'speaker-punch-in' | 'caption' | 'scripture-card' | 'title-card' | 'keyword-graphic' | 'image-broll' | 'video-broll' | 'motion-graphic' | 'split-screen' | 'none';
@@ -338,7 +338,7 @@ export interface TranscriptDocument {
   transcriptionModel?: string;
   approved: boolean;
   timingConfidence: TimingConfidence;
-  source: 'whisper-cli' | 'sermonclip-reference';
+  source: 'whisper-cli' | 'cloud-asr' | 'sermonclip-reference';
   model: string;
   segments: TranscriptSegment[];
   immutableOriginal: true;

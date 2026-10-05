@@ -8,6 +8,9 @@ export interface ExtractedShort {
   sourceStartSeconds: number;
   sourceEndSeconds: number;
   durationEstimateSeconds: number;
+  aiSuggestedStartSeconds?: number;
+  aiSuggestedEndSeconds?: number;
+  boundaryAdjustmentReason?: string;
   targetDuration: 30 | 60 | 90 | 120;
 }
 

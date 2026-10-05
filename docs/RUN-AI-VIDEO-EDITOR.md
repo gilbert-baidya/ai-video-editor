@@ -32,7 +32,11 @@ Use the same command:
 npm run dev:product
 ```
 
-The host detects existing local tools. For transcription, set `WHISPER_MODEL` to a model path relative to the repository root before starting. The existing Director provider uses `OLLAMA_HOST` and `SERMON_DIRECTOR_MODEL` when supplied; its defaults remain `http://127.0.0.1:11434` and `qwen3:30b`.
+The host detects existing local tools. For transcription, place a validated multilingual Whisper model in the ignored local `models/` directory and set `WHISPER_MODEL=models/<model-file>` before starting. `WHISPER_LANGUAGE` defaults to `auto` to preserve Bengali/English code-switching; `bn` and `en` are also supported. English-only Whisper models are rejected for `auto` or Bengali transcription.
+
+If a Whisper GPU/Metal allocation error occurs, the same job is retried once with GPU use disabled. Other transcription errors remain visible and are not retried as successful work. A transcript containing generic foreign-language placeholders or suspicious output is rejected before Gemini analysis or caption generation.
+
+Do not point the production configuration at an archived project or another repository's model directory. The application does not download or duplicate model files automatically.
 
 Do not place source media in committed folders. Runtime projects are stored under ignored `.runtime/projects/`.
 

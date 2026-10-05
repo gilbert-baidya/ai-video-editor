@@ -6,7 +6,9 @@ import type { EditPlan, TranscriptDocument } from './contracts.ts';
 import { OllamaDirectorProvider, DirectorProvider } from './director.ts';
 import { GeminiDirectorProvider } from './director-gemini.ts';
 import { runFullSermonDirector } from './full-sermon-director.ts';
-import { extractAudio, transcribeAndAlign } from './foundation.ts';
+import { extractAudio } from './foundation.ts';
+import { GeminiTranscriptionProvider } from './features/transcription/gemini-transcription-provider.ts';
+import { LocalWhisperProvider } from './features/transcription/local-whisper-provider.ts';
 import type {
   CreateProjectRequest,
   ProductCapabilities,
@@ -35,6 +37,9 @@ import {
 import { fingerprintExistingSource, parseYouTubeUrl, probeSource } from './source-ingestion.ts';
 import { applyRetentionPolicy } from './visual-policy.ts';
 import { canonicalTranscriptHash } from './sermon-chunking.ts';
+import { transcriptQualityFailures } from './transcript-integrity.ts';
+import { correctShortBoundaries } from './features/shorts/boundary-validator.ts';
+import { validateExtractedShorts } from './features/shorts/shorts-extractor.ts';
 import { attachAssetCandidate, createInitialReviewState, deriveApprovedEditPlan, isReviewStateCompatible, updateReview, type ReviewWorkspaceData } from './director-review.ts';
 import { importImageAsset, verifyAssetOnDisk } from './media-import.ts';
 import type { MediaAsset } from './contracts.ts';
@@ -280,7 +285,19 @@ export class ProductOrchestrator {
     const record = await this.store.get(projectId);
     if (record.workflow.outputTarget !== 'shorts') throw new Error('This project is not a Shorts project.');
     if (record.workflow.stages.director.status !== 'completed') throw new Error('Gemini analysis must complete before Shorts can be reviewed.');
-    const { short } = await this.loadShortCandidate(record, shortId);
+    const { short, workspace } = await this.loadShortCandidate(record, shortId);
+    if (approved) {
+      const transcript = await this.loadTranscript(record);
+      this.assertTranscriptQuality(transcript);
+      const duration = await this.verifiedPhysicalDuration(record);
+      const corrected = correctShortBoundaries(short, transcript, duration);
+      workspace.shorts = workspace.shorts?.map((candidate) => candidate.id === short.id ? corrected : candidate);
+      await writeFile(
+        resolve(this.store.artifactDirectory(projectId), 'review-workspace.json'),
+        `${JSON.stringify(workspace, null, 2)}\n`,
+        'utf8',
+      );
+    }
     const now = new Date().toISOString();
     const existing = record.workflow.shorts?.[short.id] ?? recommendedShortState(now);
     const shorts = { ...(record.workflow.shorts ?? {}), [short.id]: reviewShortState(existing, approved, now) };
@@ -335,6 +352,12 @@ export class ProductOrchestrator {
       if (state.renderStatus === 'running') throw new Error('This Short is already rendering.');
       const physicalDuration = await this.verifiedPhysicalDuration(record);
       const transcript = await this.loadTranscript(record);
+      this.assertTranscriptQuality(transcript);
+      const corrected = correctShortBoundaries(short, transcript, physicalDuration);
+      if (Math.abs(corrected.sourceStartSeconds - short.sourceStartSeconds) > 0.01
+        || Math.abs(corrected.sourceEndSeconds - short.sourceEndSeconds) > 0.01) {
+        throw new Error('The approved Short boundaries are no longer safe. Review and approve the corrected boundaries again.');
+      }
       const range = this.shortRange(short, transcript);
       if (range.start < 0 || range.end > physicalDuration + SOURCE_DURATION_TOLERANCE_SECONDS || range.end <= range.start) {
         throw new Error(`Short source range ${range.start.toFixed(3)}–${range.end.toFixed(3)} exceeds the physical source duration ${physicalDuration.toFixed(3)}.`);
@@ -437,6 +460,7 @@ export class ProductOrchestrator {
     const physicalDurationSeconds = await this.verifiedPhysicalDuration(record);
     if (record.artifacts.transcript && await access(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.transcript)).then(() => true, () => false)) {
       const transcript = JSON.parse(await readFile(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.transcript), 'utf8')) as TranscriptDocument;
+      this.assertTranscriptQuality(transcript);
       this.assertTranscriptTiming(transcript, physicalDurationSeconds);
       return this.complete(record, 'transcript', true);
     }
@@ -446,18 +470,37 @@ export class ProductOrchestrator {
     const artifacts = this.store.artifactDirectory(record.workflow.projectId);
     const transcript = this.adapters.transcribe
       ? await this.adapters.transcribe(sourcePath, record.workflow.projectId, artifacts)
-      : await this.defaultTranscribe(sourcePath, record.workflow.projectId, artifacts);
+      : await this.defaultTranscribe(sourcePath, record.workflow.projectId, artifacts, physicalDurationSeconds);
     if (transcript.projectId !== record.workflow.projectId) transcript.projectId = record.workflow.projectId;
+    this.assertTranscriptQuality(transcript);
     this.assertTranscriptTiming(transcript, physicalDurationSeconds);
     const path = resolve(artifacts, 'transcript.json');
     await writeFile(path, `${JSON.stringify(transcript, null, 2)}\n`, 'utf8');
     return this.store.save({ ...this.completedRecord(record, 'transcript', false), artifacts: { ...record.artifacts, transcript: 'artifacts/transcript.json' } });
   }
 
-  private async defaultTranscribe(sourcePath: string, projectId: string, artifacts: string): Promise<TranscriptDocument> {
+  private async defaultTranscribe(sourcePath: string, projectId: string, artifacts: string, physicalDurationSeconds: number): Promise<TranscriptDocument> {
     const audioPath = resolve(artifacts, 'source-16khz.wav');
     await extractAudio(sourcePath, audioPath);
-    const transcript = await transcribeAndAlign(audioPath, resolve(artifacts, 'transcript-raw'), process.env.WHISPER_MODEL!);
+
+    // TranscriptionProvider Abstraction (Phase 7C)
+    // Select best provider: Prefer Gemini for multilingual, fallback to local Whisper if configured
+    let provider;
+    if (process.env.GEMINI_API_KEY) {
+      provider = new GeminiTranscriptionProvider();
+    } else {
+      provider = new LocalWhisperProvider();
+    }
+
+    const transcript = await provider.transcribe({
+      audioPath,
+      projectId,
+      physicalDurationSeconds,
+      language: process.env.WHISPER_LANGUAGE === 'bn' || process.env.WHISPER_LANGUAGE === 'en'
+        ? process.env.WHISPER_LANGUAGE
+        : 'auto',
+    });
+
     return { ...transcript, projectId };
   }
 
@@ -466,6 +509,7 @@ export class ProductOrchestrator {
     if (!record.artifacts.transcript) throw new Error('Canonical transcript artifact is missing.');
     const physicalDurationSeconds = await this.verifiedPhysicalDuration(record);
     const transcript = JSON.parse(await readFile(resolve(this.store.projectDirectory(record.workflow.projectId), record.artifacts.transcript), 'utf8')) as TranscriptDocument;
+    this.assertTranscriptQuality(transcript);
     this.assertTranscriptTiming(transcript, physicalDurationSeconds);
     const result = this.adapters.analyze
       ? await this.adapters.analyze(transcript, this.store.cacheDirectory(record.workflow.projectId))
@@ -510,20 +554,22 @@ export class ProductOrchestrator {
       console.log('Using GeminiShortsProvider');
       const { GeminiShortsProvider } = await import('./features/shorts/shorts-gemini-provider.ts');
       const provider = new GeminiShortsProvider();
-      const shortsResult = await provider.extract({
+      const shortsInput = {
         projectId: transcript.projectId,
         canonicalTranscriptHash: canonicalTranscriptHash(transcript),
         segments: transcript.segments
-      });
+      };
+      const shortsResult = await provider.extract(shortsInput);
+      const safeShorts = shortsResult.shorts.map((short) => correctShortBoundaries(short, transcript, physicalDurationSeconds));
+      const boundaryErrors = validateExtractedShorts(safeShorts, shortsInput);
+      if (boundaryErrors.length) throw new Error(`Boundary validation rejected Gemini Shorts. ${boundaryErrors.join(' ')}`);
       // Shorts extraction doesn't produce a full sermon plan, we map the first short to a draft plan to keep the pipeline intact.
-      const first = shortsResult.shorts[0];
+      const first = safeShorts[0];
       let sourceStart = 0;
       let sourceEnd = 30;
       if (first && first.sourceSegmentIds.length > 0) {
-        const firstSeg = transcript.segments.find(s => s.id === first.sourceSegmentIds[0]);
-        const lastSeg = transcript.segments.find(s => s.id === first.sourceSegmentIds[first.sourceSegmentIds.length - 1]);
-        if (firstSeg) sourceStart = firstSeg.start;
-        if (lastSeg) sourceEnd = lastSeg.end;
+        sourceStart = first.sourceStartSeconds;
+        sourceEnd = first.sourceEndSeconds;
       }
       
       const plan: EditPlan = {
@@ -542,7 +588,7 @@ export class ProductOrchestrator {
         reviewWorkspace: {
           projectId: transcript.projectId,
           title: analysis.title,
-          languageProfile: 'en',
+          languageProfile: transcript.language === 'bn' || transcript.language === 'mixed' ? transcript.language : 'en',
           preview: { controlUrl: '', directorUrl: '', durationSeconds: physicalDurationSeconds, sourceStart: 0, sourceEnd: physicalDurationSeconds },
           analysis,
           directorExecution: { provider: provider.name, model: shortsResult.model, providerStatus: 'ai-success', fallbackUsed: false, timestamp: new Date().toISOString() },
@@ -556,7 +602,7 @@ export class ProductOrchestrator {
           directorQuality: { coverageMetrics: { timelinePercent: 0, sourcePercent: 0 }, editCount: 0, editorialPasses: 0, opportunities: [] },
           editorialEnrichment: { outcome: 'bypassed', enrichmentAttemptCount: 0 },
           assetPreviewUrls: {},
-          shorts: shortsResult.shorts
+          shorts: safeShorts
         },
         provenance: { name: provider.name, model: shortsResult.model, status: 'ai-success', fallbackUsed: false },
         coveragePercent: 100,
@@ -842,6 +888,11 @@ export class ProductOrchestrator {
     if (failures.length) throw new Error(`Transcript timing rejected. ${failures.join(' ')}`);
   }
 
+  private assertTranscriptQuality(transcript: TranscriptDocument): void {
+    const failures = transcriptQualityFailures(transcript.originalTranscript, transcript.segments, transcript.language);
+    if (failures.length) throw new Error(`Transcript quality rejected. ${failures.join(' ')}`);
+  }
+
   private async loadApprovedPlanAndWorkspace(record: ProductProjectRecord): Promise<{ plan: EditPlan; workspace: ReviewDataPayload }> {
     if (!record.artifacts.approvedPlan) throw new Error('Approved edit plan artifact is missing.');
     const projectDirectory = this.store.projectDirectory(record.workflow.projectId);
@@ -869,7 +920,7 @@ export class ProductOrchestrator {
     const first = transcript.segments.find((segment) => segment.id === short.sourceSegmentIds[0]);
     const last = transcript.segments.find((segment) => segment.id === short.sourceSegmentIds.at(-1));
     if (!first || !last) throw new Error(`Short ${short.id} references transcript segments that no longer exist.`);
-    return { start: first.start, end: last.end };
+    return { start: short.sourceStartSeconds, end: short.sourceEndSeconds };
   }
 
   private async assertRenderDurationIntegrity(record: ProductProjectRecord, plan: EditPlan, workspace: ReviewDataPayload): Promise<void> {

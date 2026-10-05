@@ -47,8 +47,9 @@ The transcript is broken down into numbered segments.
 
 RULES:
 1. Extract up to ${maxShorts} shorts.
-2. A short must be between 30 and 120 seconds in total duration (assume average speech rate).
+2. A short must span at least 30 and at most 120 real physical seconds based on the supplied segment timestamps. Select the strongest semantic excerpt; do not default to the entire transcript unless it is genuinely the strongest standalone candidate. If the strongest moment is shorter than 30 seconds, include adjacent context segments until the continuous physical range is at least 30 seconds. Never return a range shorter than 30 seconds.
 3. The content MUST be entirely self-contained (Standalone). It should not require external context.
+3b. IMPORTANT: The selected startSegmentIndex MUST be the beginning of a complete thought or sentence. Do NOT start mid-sentence. If in doubt, starting at index 0 is highly reliable.
 4. It MUST have a strong hook (the first 3-5 seconds).
 5. Specify the exact continuous range of segment indices to use.
 6. The content is generic video (could be a podcast, sermon, interview, or tutorial) - do not assume a specific domain unless it is evident in the text.
