@@ -551,7 +551,7 @@ export class ProductOrchestrator {
           beats: [],
           qa: { status: 'PASS', failures: [] },
           evidence: { explanationChain: '#', placementEvidence: '#', beforeFrame: '', duringFrame: '', afterFrame: '' },
-          initialReview: { projectId: transcript.projectId, schemaVersion: '1.0', sourceEditPlanHash: '', decisions: [], updatedAt: new Date().toISOString() },
+          initialReview: { projectId: transcript.projectId, schemaVersion: '1.0', sourceEditPlanHash: (await import('node:crypto')).createHash('sha256').update(JSON.stringify(plan)).digest('hex'), decisions: [], updatedAt: new Date().toISOString() },
           policyRecords: [],
           directorQuality: { coverageMetrics: { timelinePercent: 0, sourcePercent: 0 }, editCount: 0, editorialPasses: 0, opportunities: [] },
           editorialEnrichment: { outcome: 'bypassed', enrichmentAttemptCount: 0 },
