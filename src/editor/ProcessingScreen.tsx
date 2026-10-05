@@ -28,7 +28,9 @@ export const ProcessingScreen: React.FC<{ session: EditorSession }> = ({ session
   // Auto-advance stages to simplify user journey
   useEffect(() => {
     if (session.busy) return;
-    if (ingest.status === 'completed' && transcript.status === 'not-started') {
+    if (ingest.status === 'not-started') {
+      void runStage('ingest');
+    } else if (ingest.status === 'completed' && transcript.status === 'not-started') {
       void runStage('transcript');
     }
   }, [ingest.status, transcript.status, session.busy, runStage]);
@@ -61,6 +63,7 @@ export const ProcessingScreen: React.FC<{ session: EditorSession }> = ({ session
             onClick={() => {
               if (transcript.status === 'completed') void runStage('director');
               else if (ingest.status === 'completed') void runStage('transcript');
+              else if (ingest.status === 'not-started') void runStage('ingest');
             }}
             style={{ padding: '12px 32px', fontSize: '15px', fontWeight: 600, background: 'var(--accent-primary)', color: '#FFF', border: 'none', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)' }}
           >

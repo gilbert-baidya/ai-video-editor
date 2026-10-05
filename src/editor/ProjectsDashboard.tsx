@@ -76,13 +76,13 @@ export const ProjectsDashboard: React.FC<{
     <div className="view-content-wrapper">
       <div className="view-header">
         <div className="header-title-group">
-          <h1>Sermon Projects</h1>
-          <p>Saved local projects and sermon video workspaces</p>
+          <h1>Video Projects</h1>
+          <p>Saved local projects and video workspaces</p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
           <button className="btn-primary" onClick={onNew}>
             <PlusCircleIcon size={18} />
-            <span>+ New Sermon Project</span>
+            <span>+ New Project</span>
           </button>
         </div>
       </div>
@@ -96,8 +96,8 @@ export const ProjectsDashboard: React.FC<{
       {!loading && !projects.length && !error && (
         <div className="ve-state" data-state="empty">
           <b>No projects yet</b>
-          <p>Import a sermon video to begin. The original source is stored immutably and fingerprinted.</p>
-          <button type="button" className="btn-primary" onClick={onNew}>Import a sermon</button>
+          <p>Import a video to begin. The original source is stored immutably and fingerprinted.</p>
+          <button type="button" className="btn-primary" onClick={onNew}>Import a video</button>
         </div>
       )}
 

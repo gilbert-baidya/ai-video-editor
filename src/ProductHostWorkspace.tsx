@@ -56,7 +56,7 @@ export const ProductHostWorkspace: React.FC = () => {
       <DirectorReviewWorkspace data={session.workspace} initialBeatId={detailedReview.beatId} serverStateOnly onReviewStateChange={(review) => void session.saveReviewState(review)} />
     </div>;
   } else if (screen === 'projects') content = <ProjectsDashboard projects={projects} capabilities={capabilities} loading={listLoading} error={listError} onOpen={(project) => open(project)} onNew={() => navigate('new')} />;
-  else if (screen === 'new') content = <NewProjectScreen capabilities={capabilities} onCreated={(created) => { void refreshList(); open(created, 'director'); }} />;
+  else if (screen === 'new') content = <NewProjectScreen capabilities={capabilities} onCreated={(created) => { void refreshList(); open(created, created.workflow.outputTarget === 'shorts' ? 'editor' : 'director'); }} />;
   else if (screen === 'editor') {
     if (session.project?.workflow.outputTarget === 'shorts') {
       if (session.workspace?.shorts && session.workspace.shorts.length > 0) {

@@ -42,7 +42,7 @@ export const NewProjectScreen: React.FC<{
       <div className="view-header" style={{ marginBottom: '32px' }}>
         <div className="header-title-group">
           <h1>Create New Project</h1>
-          <p>Import a sermon or video to begin analysis and editing</p>
+          <p>Import a video to begin analysis and editing</p>
         </div>
       </div>
 
@@ -88,7 +88,7 @@ export const NewProjectScreen: React.FC<{
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <input type="radio" name="target" checked={target === 'long-form'} onChange={() => setTarget('long-form')} disabled={busy} style={{ accentColor: 'var(--accent-primary)' }} />
-                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Full Sermon Edit (16:9)</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Long-form Edit (16:9)</span>
                 </div>
                 <span style={{ fontSize: '13px', color: 'var(--text-muted)', paddingLeft: '24px' }}>Advanced pipeline to produce a polished long-form multi-camera style video.</span>
               </label>
