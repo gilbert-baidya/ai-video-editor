@@ -23,8 +23,9 @@ export interface EditorSession {
   reload: () => Promise<void>;
   saveReviewState: (next: ReviewState) => Promise<void>;
   act: (beatId: string, action: ReviewAction, options?: { operation?: EditOperation; displayText?: string; reason?: string }) => Promise<void>;
-  runStage: (stage: ProductStage) => Promise<void>;
+  runStage: (stage: ProductStage, payload?: any) => Promise<void>;
   rerender: (reason: string) => Promise<void>;
+  reviewShort: (shortId: string, approved: boolean) => Promise<void>;
   importAsset: (input: ImportInput) => Promise<void>;
   clearError: () => void;
 }
@@ -32,7 +33,7 @@ export interface EditorSession {
 const message = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
 const finished = (job: ProductJob): boolean => ['completed', 'failed', 'cancelled', 'interrupted'].includes(job.status);
 
-type Client = EditorClient & Pick<typeof productClient, 'startStage' | 'saveReview' | 'rerender' | 'importAsset'>;
+type Client = EditorClient & Pick<typeof productClient, 'startStage' | 'saveReview' | 'rerender' | 'reviewShort' | 'importAsset'>;
 
 // Single owner of one project's loaded data, human review state and backend actions. Views stay presentational.
 export function useEditorSession(projectId: string | undefined, client: Client = productClient): EditorSession {
@@ -70,7 +71,9 @@ export function useEditorSession(projectId: string | undefined, client: Client =
     void reload();
   }, [reload]);
 
-  const resolved = useMemo(() => workspace && review ? updateReview(workspace, review) : undefined, [workspace, review]);
+  const resolved = useMemo(() => workspace && review
+    ? updateReview(workspace, review, project?.sourceDurationValidation?.physicalDurationSeconds)
+    : undefined, [project?.sourceDurationValidation?.physicalDurationSeconds, workspace, review]);
 
   const persist = useCallback(async (next: ReviewState, previous: ReviewState) => {
     if (!projectId) return;
@@ -135,9 +138,9 @@ export function useEditorSession(projectId: string | undefined, client: Client =
     }
   }, []);
 
-  const runStage = useCallback<EditorSession['runStage']>((stage) => guarded(async () => {
+  const runStage = useCallback<EditorSession['runStage']>((stage, payload) => guarded(async () => {
     if (!projectId) return;
-    await track(await client.startStage(projectId, stage));
+    await track(await client.startStage(projectId, stage, payload));
     await reload();
   }), [client, guarded, projectId, reload, track]);
 
@@ -147,11 +150,17 @@ export function useEditorSession(projectId: string | undefined, client: Client =
     await reload();
   }), [client, guarded, projectId, reload, track]);
 
+  const reviewShort = useCallback<EditorSession['reviewShort']>((shortId, approved) => guarded(async () => {
+    if (!projectId) return;
+    setProject(await client.reviewShort(projectId, shortId, approved));
+    await reload();
+  }), [client, guarded, projectId, reload]);
+
   const importAsset = useCallback<EditorSession['importAsset']>((input) => guarded(async () => {
     if (!projectId) return;
     await client.importAsset(projectId, input);
     await reload();
   }), [client, guarded, projectId, reload]);
 
-  return { phase, project, workspace, review, resolved, message: text, saving, busy, actionError, reload, saveReviewState, act, runStage, rerender, importAsset, clearError: () => setActionError('') };
+  return { phase, project, workspace, review, resolved, message: text, saving, busy, actionError, reload, saveReviewState, act, runStage, rerender, reviewShort, importAsset, clearError: () => setActionError('') };
 }

@@ -28,13 +28,13 @@ try {
   const record = {
     workflow: { projectId: 'test-project', render: { format: { orientation: 'portrait' } } },
     artifacts: { approvedPlan: 'artifacts/approved-plan.json' },
-    sourceMetadata: { durationSeconds: 72 } // Project thinks it's 72 seconds
+    sourceMetadata: { durationSeconds: 60 }
   } as any;
 
   // The review-workspace needs an empty mediaIndex
-  writeFileSync(join(projectDir, 'artifacts', 'review-workspace.json'), JSON.stringify({ mediaIndex: { assets: [] } }));
+  writeFileSync(join(projectDir, 'artifacts', 'review-workspace.json'), JSON.stringify({ preview: { durationSeconds: 72 }, mediaIndex: { assets: [] } }));
   // The approved plan
-  writeFileSync(join(projectDir, 'artifacts', 'approved-plan.json'), JSON.stringify({ status: 'approved', operations: [] }));
+  writeFileSync(join(projectDir, 'artifacts', 'approved-plan.json'), JSON.stringify({ status: 'approved', operations: [{ id: 'impossible', type: 'no-change', start: 60, end: 72, mode: 'canonical-no-change', reason: 'negative fixture', confidence: 1 }] }));
 
   // Run the adapter
   const adapter = createRemotionRenderAdapter(root);
@@ -42,7 +42,16 @@ try {
 
   await assert.rejects(
     adapter(record, sourceVideo, outputPath),
-    /SOURCE_DURATION_MISMATCH: Approved plan timeline relies on 72 seconds of media, but physical source is/
+    /SOURCE_DURATION_MISMATCH: Source duration mismatch: Physical footage is .* seconds, but the approved timeline requires 72 seconds\. Rendering is blocked\./
+  );
+
+  // Metadata mismatch remains independently protected even when plan timing itself is valid.
+  record.sourceMetadata.durationSeconds = 72;
+  writeFileSync(join(projectDir, 'artifacts', 'review-workspace.json'), JSON.stringify({ preview: { durationSeconds: 60 }, mediaIndex: { assets: [] } }));
+  writeFileSync(join(projectDir, 'artifacts', 'approved-plan.json'), JSON.stringify({ status: 'approved', operations: [{ id: 'valid', type: 'no-change', start: 0, end: 60, mode: 'canonical-no-change', reason: 'negative fixture', confidence: 1 }] }));
+  await assert.rejects(
+    adapter(record, sourceVideo, outputPath),
+    /SOURCE_DURATION_MISMATCH: Source duration mismatch: Physical footage is .* seconds, but the approved timeline requires 72 seconds\. Rendering is blocked\./
   );
   console.log(JSON.stringify({ status: 'PASS', suite: 'source-duration-mismatch' }, null, 2));
 

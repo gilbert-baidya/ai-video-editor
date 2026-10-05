@@ -4,6 +4,7 @@ import type { ProductCapabilities, ProductProjectRecord } from './product-api.ts
 import { productClient } from './product-client.ts';
 import { AppShell, type Screen } from './editor/AppShell.tsx';
 import { EditingWorkspace } from './editor/EditingWorkspace.tsx';
+import { ShortsReviewScreen } from './editor/ShortsReviewScreen.tsx';
 import { NewProjectScreen } from './editor/NewProjectScreen.tsx';
 import { ProjectsDashboard } from './editor/ProjectsDashboard.tsx';
 import { DirectorScreen, ExportScreen, MediaScreen, SettingsScreen } from './editor/ProjectScreens.tsx';
@@ -55,7 +56,13 @@ export const ProductHostWorkspace: React.FC = () => {
     </div>;
   } else if (screen === 'projects') content = <ProjectsDashboard projects={projects} capabilities={capabilities} loading={listLoading} error={listError} onOpen={(project) => open(project)} onNew={() => navigate('new')} />;
   else if (screen === 'new') content = <NewProjectScreen capabilities={capabilities} onCreated={(created) => { void refreshList(); open(created, 'director'); }} />;
-  else if (screen === 'editor') content = <EditingWorkspace session={session} onOpenReview={(beatId) => setDetailedReview({ beatId })} onGoExport={() => navigate('export')} onGoDirector={() => navigate('director')} />;
+  else if (screen === 'editor') {
+    if (session.workspace?.shorts && session.workspace.shorts.length > 0) {
+      content = <ShortsReviewScreen session={session} onOpenAdvancedEditor={() => navigate('director')} />;
+    } else {
+      content = <EditingWorkspace session={session} onOpenReview={(beatId) => setDetailedReview({ beatId })} onGoExport={() => navigate('export')} onGoDirector={() => navigate('director')} />;
+    }
+  }
   else if (screen === 'director') content = <DirectorScreen session={session} onOpenReview={() => navigate('editor')} onOpenExport={() => navigate('export')} />;
   else if (screen === 'media') content = <MediaScreen session={session} />;
   else if (screen === 'export') content = <ExportScreen session={session} />;

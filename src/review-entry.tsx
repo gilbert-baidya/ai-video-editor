@@ -5,6 +5,7 @@ import './director-review.css';
 import './director-review-overrides.css';
 import './director-review-text.css';
 import './product-workspace.css';
+import './sermonclip.css';
 import './editor/editor.css';
 
 const root = document.getElementById('root');

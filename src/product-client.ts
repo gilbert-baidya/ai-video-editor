@@ -39,9 +39,14 @@ export const productClient = {
       xhr.send(file);
     });
   },
-  startStage: async (projectId: string, stage: ProductStage) => {
+  startStage: async (projectId: string, stage: ProductStage, payload?: any) => {
     const action = stage === 'transcript' ? 'transcribe' : stage === 'director' ? 'analyze' : stage;
-    return (await request<{ job: ProductJob }>(`/api/projects/${projectId}/${action}`, { method: 'POST' })).job;
+    const options: RequestInit = { method: 'POST' };
+    if (payload) {
+      options.headers = { 'content-type': 'application/json' };
+      options.body = JSON.stringify(payload);
+    }
+    return (await request<{ job: ProductJob }>(`/api/projects/${projectId}/${action}`, options)).job;
   },
   rerender: async (projectId: string, reason: string) =>
     (await request<{ job: ProductJob }>(`/api/projects/${projectId}/rerender`, {
@@ -53,6 +58,13 @@ export const productClient = {
     request<MediaAsset>(`/api/projects/${projectId}/assets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }),
   sourceUrl: (projectId: string) => `/api/projects/${projectId}/source`,
   outputUrl: (projectId: string) => `/api/projects/${projectId}/output`,
+  shortOutputUrl: (projectId: string, shortId: string) => `/api/projects/${projectId}/short-output?shortId=${encodeURIComponent(shortId)}`,
+  reviewShort: async (projectId: string, shortId: string, approved: boolean) =>
+    (await request<{ project: ProductProjectRecord }>(`/api/projects/${projectId}/short-review`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shortId, approved }),
+    })).project,
   assetUrl: (projectId: string, assetId: string) => `/api/projects/${projectId}/asset?assetId=${encodeURIComponent(assetId)}`,
   reviewWorkspace: (projectId: string) => request<ReviewDataPayload>(`/api/projects/${projectId}/review-workspace`),
   saveReview: async (projectId: string, review: ReviewState) =>

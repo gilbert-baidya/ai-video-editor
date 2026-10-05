@@ -4,8 +4,22 @@ import { productClient } from '../product-client.ts';
 import { DirectorPanel } from './DirectorPanel.tsx';
 import { ExportPanel } from './ExportPanel.tsx';
 import { AssetCard, ImportAssetForm } from './LibraryPanel.tsx';
-import { CapabilityStrip } from './ProjectsDashboard.tsx';
-import { buildPipeline, computeBrollStatus, reconcileTimeline } from './editor-model.ts';
+const tone = (state: string): string => state === 'AVAILABLE' ? 'on' : state === 'DEGRADED' ? 'warn' : 'off';
+export const CapabilityStrip: React.FC<{ capabilities?: ProductCapabilities }> = ({ capabilities }) => {
+  if (!capabilities) return <div className="ve-capabilities"><span className="ve-note">Checking local capabilities…</span></div>;
+  const director = capabilities.director;
+  const items: Array<[string, string, string]> = [
+    ['AI Director', director.state, `${director.provider} · ${director.model}`],
+    ['Transcription', capabilities.transcription.state, capabilities.transcription.detail],
+    ['Renderer', capabilities.render.state, capabilities.render.detail],
+    ['FFmpeg', capabilities.ffmpeg.state, capabilities.ffmpeg.detail],
+    ['FFprobe', capabilities.ffprobe.state, capabilities.ffprobe.detail],
+    ['YouTube import', capabilities.youtube.state, capabilities.youtube.detail],
+  ];
+  return <div className="ve-capabilities">{items.map(([label, state, detail]) => <div key={label} title={detail}><span className={`ve-dot ${tone(state)}`} /><b>{label}</b><small>{state.replaceAll('_', ' ').toLowerCase()}</small></div>)}</div>;
+};
+
+import { buildPipeline, computeBrollStatus, reconcileTimeline, sourceDurationBlockers } from './editor-model.ts';
 import type { EditorSession } from './useEditorSession.ts';
 
 const Missing: React.FC<{ title: string; session: EditorSession; hint: string }> = ({ title, session, hint }) => <div className="ve-state" data-state={session.phase}>
@@ -75,7 +89,14 @@ export const MediaScreen: React.FC<{ session: EditorSession }> = ({ session }) =
 export const ExportScreen: React.FC<{ session: EditorSession }> = ({ session }) => {
   const { project, workspace } = session;
   if (!project) return <section className="ve-page"><Missing title="Render / Export" session={session} hint="Open a project first." /></section>;
-  const issues = reconcileTimeline({ planDurationSeconds: workspace?.preview.durationSeconds ?? project.sourceMetadata?.durationSeconds ?? 0, sourceMetadataSeconds: workspace ? project.sourceMetadata?.durationSeconds : undefined });
+  const issues = [...new Set([
+    ...sourceDurationBlockers(project),
+    ...reconcileTimeline({
+      planDurationSeconds: workspace?.preview.durationSeconds ?? project.sourceMetadata?.durationSeconds ?? 0,
+      sourceMetadataSeconds: workspace ? project.sourceMetadata?.durationSeconds : undefined,
+      physicalSourceSeconds: project.sourceDurationValidation?.physicalDurationSeconds,
+    }),
+  ])];
   return <section className="ve-page" data-screen="export">
     <header className="ve-page-head"><div><small>RENDER / EXPORT</small><h1>{project.workflow.title}</h1></div></header>
     {session.actionError && <div className="ve-banner error" role="alert">{session.actionError}<button type="button" onClick={session.clearError}>Dismiss</button></div>}

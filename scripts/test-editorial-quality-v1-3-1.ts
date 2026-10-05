@@ -254,7 +254,13 @@ try {
     youtube: { state: 'UNAVAILABLE', detail: 'fixture' },
     render: { state: 'UNAVAILABLE', detail: 'fixture' },
   };
-  const orchestrator = new ProductOrchestrator(store, temporary, { capabilities: async () => capabilities });
+  const orchestrator = new ProductOrchestrator(store, temporary, {
+    capabilities: async () => capabilities,
+    probeSource: async (path) => {
+      if (path.endsWith('unknown.mp4')) throw new Error('Source orientation is unknown in the fixture.');
+      return { durationSeconds: 2, containerDurationSeconds: 2, videoDurationSeconds: 2, audioDurationSeconds: 2, durationSource: 'ffprobe', probedAt: new Date().toISOString(), width: 1080, height: 1918 };
+    },
+  });
   await orchestrator.initialize();
   const project = await orchestrator.createProject({ title: 'Portrait format propagation', source: { type: 'local-video', fileName: 'portrait.mp4' } });
   await writeFile(resolve(store.sourceDirectory(project.workflow.projectId), 'portrait.mp4'), 'fixture');

@@ -8,7 +8,7 @@ import { PreviewPlayer } from './PreviewPlayer.tsx';
 import { Splitter } from './Splitter.tsx';
 import { Timeline } from './Timeline.tsx';
 import { useLayoutPrefs } from './useLayoutPrefs.ts';
-import { LAYOUT_LIMITS, LIBRARY_MIN_VIEWPORT, STACKED_VIEWPORT, beatForOperation, buildPipeline, buildTimeline, clampTime, computeBrollStatus, findClip, operationById, previewFrameAt, reconcileTimeline, type LayoutPrefs, type TimelineClip, type Viewport } from './editor-model.ts';
+import { LAYOUT_LIMITS, LIBRARY_MIN_VIEWPORT, STACKED_VIEWPORT, beatForOperation, buildPipeline, buildTimeline, clampTime, computeBrollStatus, findClip, operationById, previewFrameAt, reconcileTimeline, sourceDurationBlockers, type LayoutPrefs, type TimelineClip, type Viewport } from './editor-model.ts';
 import type { EditorSession } from './useEditorSession.ts';
 import { loadWaveform } from './waveform.ts';
 
@@ -60,7 +60,8 @@ export const EditingWorkspaceView: React.FC<WorkspaceViewProps> = ({ session, ti
 
   const plan = resolved.approvedPlan;
   const assets = workspace.mediaIndex.assets;
-  const sourceDuration = project.sourceMetadata?.durationSeconds;
+  const recordedSourceDuration = project.sourceMetadata?.durationSeconds;
+  const sourceDuration = project.sourceDurationValidation?.physicalDurationSeconds ?? recordedSourceDuration;
   const model = buildTimeline({ plan, assets, durationSeconds: workspace.preview.durationSeconds, sourceDurationSeconds: measuredSourceSeconds ?? sourceDuration, review });
   const frame = previewFrameAt(plan, assets, time);
   const clip = findClip(model, selectedClipId);
@@ -69,7 +70,11 @@ export const EditingWorkspaceView: React.FC<WorkspaceViewProps> = ({ session, ti
   const decision = beat ? review.decisions.find((item) => item.beatId === beat.section.id) : undefined;
   const assetUrl = (assetId: string) => productClient.assetUrl(project.workflow.projectId, assetId);
   const orientation = project.workflow.render.format.orientation;
-  const issues = reconcileTimeline({ planDurationSeconds: workspace.preview.durationSeconds, sourceMetadataSeconds: sourceDuration, measuredSourceSeconds });
+  const durationBlockers = sourceDurationBlockers(project);
+  const issues = [...new Set([
+    ...durationBlockers,
+    ...reconcileTimeline({ planDurationSeconds: workspace.preview.durationSeconds, sourceMetadataSeconds: recordedSourceDuration, physicalSourceSeconds: project.sourceDurationValidation?.physicalDurationSeconds, measuredSourceSeconds }),
+  ])];
   const statuses = Object.fromEntries(review.decisions.map((item) => [item.beatId, item.status]));
   const steps = buildPipeline(project, computeBrollStatus(plan, workspace.beats, review));
   const rendered = ['completed', 'failed'].includes(project.workflow.stages.render.status);
@@ -82,8 +87,8 @@ export const EditingWorkspaceView: React.FC<WorkspaceViewProps> = ({ session, ti
     <header className="ve-editor-bar">
       <div className="ve-crumbs"><span>Projects</span><i>›</i><b>{project.workflow.title}</b><i>›</i><span>Review & Edit</span></div>
       <div className="ve-bar-chips">
-        <span className="ve-chip">{project.workflow.status.replaceAll('_', ' ')}</span>
-        <span className={`ve-chip ${resolved.readiness.ready ? 'status-accepted' : 'status-pending'}`}>{resolved.readiness.label}</span>
+        <span className="ve-chip">{durationBlockers.length ? 'SOURCE DURATION MISMATCH' : project.workflow.status.replaceAll('_', ' ')}</span>
+        <span className={`ve-chip ${resolved.readiness.ready && !durationBlockers.length ? 'status-accepted' : 'status-pending'}`}>{durationBlockers.length ? 'RENDER BLOCKED' : resolved.readiness.label}</span>
         <span className="ve-chip">{orientation} {project.workflow.render.format.width}×{project.workflow.render.format.height}</span>
         {session.saving && <span className="ve-chip status-modified" role="status">Saving…</span>}
       </div>
@@ -216,4 +221,3 @@ export const EditingWorkspace: React.FC<{
   };
   return <EditingWorkspaceView session={session} time={clock.time} seekToken={clock.seek} playing={playing} selectedClipId={selectedClipId} pixelsPerSecond={pixelsPerSecond} rightTab={rightTab} layout={prefs.layout} viewport={prefs.viewport} onLayout={prefs.update} onLayoutReset={prefs.reset} measuredSourceSeconds={measured} peaks={wave.peaks} waveformNote={wave.note} handlers={handlers} />;
 };
-

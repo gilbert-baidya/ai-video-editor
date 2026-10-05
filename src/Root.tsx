@@ -72,3 +72,26 @@ export const FoundationComposition: React.FC<FoundationProps> = ({ sourcePath, e
     </AbsoluteFill>
   );
 };
+
+export interface ShortProps extends FoundationProps {
+  sourceStartSeconds: number;
+  sourceEndSeconds: number;
+}
+
+export const ShortComposition: React.FC<ShortProps> = ({ sourcePath, editPlan, graphicFontSize, mediaAssets = [], videoFormat = defaultVideoFormatProfile(), sourceStartSeconds, sourceEndSeconds }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const seconds = sourceStartSeconds + (frame / fps); // Map local timeline to global source seconds
+  const speaker = editPlan.operations.find((operation) => operation.type === 'speaker-position' && seconds >= operation.start && seconds < operation.end);
+  const caption = editPlan.operations.find((operation) => operation.type === 'caption' && seconds >= operation.start && seconds < operation.end);
+  const speakerPosition = speaker?.type === 'speaker-position' ? speaker.position : 'center';
+  const pastorOpacity = 1;
+  const sourceStartFrames = Math.round(sourceStartSeconds * fps);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: '#101820', fontFamily: 'Noto Sans Bengali, sans-serif' }}>
+      <Video src={staticFile(sourcePath)} startFrom={sourceStartFrames} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: pastorOpacity, ...positionStyle(speakerPosition) }} />
+      {caption?.type === 'caption' && <div style={{ position: 'absolute', left: 40, right: 40, bottom: 200, color: '#fff', fontSize: 56, textAlign: 'center', textShadow: '0 3px 10px #000', fontWeight: 800 }}>{caption.text}</div>}
+    </AbsoluteFill>
+  );
+};

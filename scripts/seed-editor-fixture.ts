@@ -40,7 +40,22 @@ const operations = (): EditOperation[] => [
 let projectId = '';
 const orchestrator = new ProductOrchestrator(store, appRoot, {
   capabilities: async () => ({ ...(await discoverCapabilities({ root: appRoot })), transcription: { state: 'AVAILABLE', detail: 'UI fixture (stub)' } }),
-  transcribe: async () => ({ projectId, language: 'en', segments: [{ id: 'segment-1', start: 0, end: 72, text: 'Synthetic fixture transcript.' }] }) as any,
+  transcribe: async () => ({
+    schemaVersion: '1.0',
+    projectId,
+    originalTranscript: 'Synthetic fixture transcript.',
+    aiSuggestedDisplayText: 'Synthetic fixture transcript.',
+    approvedDisplayText: 'Synthetic fixture transcript.',
+    language: 'en',
+    textSource: 'manual',
+    approved: true,
+    timingConfidence: 'segment-safe',
+    source: 'sermonclip-reference',
+    model: 'none',
+    immutableOriginal: true,
+    alignment: { provider: 'fixture', status: 'verified', limitations: [] },
+    segments: [{ id: 'segment-1', start: 0, end: 72, text: 'Synthetic fixture transcript.', language: 'en', words: [{ id: 'w1', start: 0, end: 72, text: 'test', language: 'en' }] }]
+  }) as any,
   analyze: async () => {
     const analysis = { sections, projectId, title: 'UI fixture sermon (synthetic)' } as unknown as SermonAnalysis;
     const aiPlan: EditPlan = { schemaVersion: '2.0', projectId, sourceTranscriptHash: 'ui-fixture', operations: operations(), status: 'draft', createdBy: { provider: 'ui-fixture', model: 'none' } };

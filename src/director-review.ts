@@ -16,13 +16,11 @@ import { assetMetadataIssues, rightsEvidenceIssues } from './media-asset-validat
 import type { PolicyDecisionRecord } from './visual-policy.ts';
 import type { DirectorQualitySummary } from './editorial-opportunity.ts';
 import type { DirectorEditorialEnrichmentResult } from './director-enrichment.ts';
+import type { ExtractedShort } from './features/shorts/shorts-model.ts';
+import { validatePlanTiming } from './source-duration.ts';
 
-function validateReviewPlan(plan: EditPlan, duration: number): string[] {
-  const failures: string[] = [];
-  for (const operation of plan.operations) {
-    if (operation.start < 0 || operation.end <= operation.start) failures.push(`${operation.id}: invalid time range`);
-    if (operation.end > duration) failures.push(`${operation.id}: exceeds media duration`);
-  }
+function validateReviewPlan(plan: EditPlan, duration: number, requiredTimelineSeconds: number): string[] {
+  const failures = validatePlanTiming(plan, duration, requiredTimelineSeconds);
   for (let index = 0; index < plan.operations.length; index += 1) {
     for (let next = index + 1; next < plan.operations.length; next += 1) {
       const left = plan.operations[index];
@@ -94,6 +92,7 @@ export interface ReviewWorkspaceData {
   aiPlan: EditPlan;
   mediaIndex: MediaIndex;
   beats: ReviewBeat[];
+  shorts?: ExtractedShort[];
   qa: { status: string; failures: string[]; [key: string]: unknown };
   evidence: {
     explanationChain: string;
@@ -279,7 +278,7 @@ export function applyReviewAction(state: ReviewState, beatId: string, action: Re
   return { ...state, decisions, updatedAt: new Date().toISOString() };
 }
 
-export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' | 'qa' | 'aiPlan' | 'mediaIndex' | 'directorQuality'>, review: ReviewState, durationSeconds: number): ReviewReadiness {
+export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' | 'qa' | 'aiPlan' | 'mediaIndex' | 'directorQuality'>, review: ReviewState, durationSeconds: number, requiredTimelineSeconds = durationSeconds): ReviewReadiness {
   const blockers: string[] = [];
   const warnings: string[] = [];
   const decisions = new Map(review.decisions.map((decision) => [decision.beatId, decision]));
@@ -305,14 +304,15 @@ export function evaluateReviewReadiness(data: Pick<ReviewWorkspaceData, 'beats' 
     if (beat.section.suggestedDisplayText && decision?.approvedDisplayText === undefined && decision?.status !== 'rejected' && beat.originalOperation?.type === 'sermon-point') blockers.push(`${beat.section.id}: AI display text is not approved.`);
   }
   const plan = deriveApprovedEditPlan(data.aiPlan, review, 'approved');
-  blockers.push(...validateReviewPlan(plan, durationSeconds));
+  blockers.push(...validateReviewPlan(plan, durationSeconds, requiredTimelineSeconds));
   if (data.qa.status !== 'PASS') blockers.push(...data.qa.failures.map((failure) => `QA: ${failure}`));
   if (data.directorQuality?.status === 'LOW-ACTIVITY') warnings.push(`Director quality is LOW-ACTIVITY: ${data.directorQuality.reason}`);
   if (data.beats.some((beat) => beat.noBroll)) warnings.push('No-B-roll decisions remain active for speaker-led and application moments.');
   return { ready: blockers.length === 0, label: blockers.length === 0 ? 'READY FOR FINAL RENDER' : 'REVIEW BLOCKED', blockers, warnings };
 }
 
-export function updateReview(data: ReviewWorkspaceData, review: ReviewState): ReviewedWorkspaceData {
-  const readiness = evaluateReviewReadiness(data, review, data.preview.durationSeconds);
+export function updateReview(data: ReviewWorkspaceData, review: ReviewState, verifiedSourceDurationSeconds?: number): ReviewedWorkspaceData {
+  const physicalDurationSeconds = verifiedSourceDurationSeconds ?? data.preview.durationSeconds;
+  const readiness = evaluateReviewReadiness(data, review, physicalDurationSeconds, data.preview.durationSeconds);
   return { ...data, review, approvedPlan: deriveApprovedEditPlan(data.aiPlan, review, readiness.ready ? 'approved' : 'draft'), readiness };
 }

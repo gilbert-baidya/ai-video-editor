@@ -43,6 +43,7 @@ let renderCount = 0;
 let failNext = false;
 const orchestrator = new ProductOrchestrator(store, process.cwd(), {
   capabilities: async () => ({ render: { state: 'AVAILABLE', detail: 'stub' } }) as any,
+  probeSource: async () => ({ durationSeconds: 60, containerDurationSeconds: 60, videoDurationSeconds: 60, audioDurationSeconds: 60, durationSource: 'ffprobe', width: 1080, height: 1920 }),
   render: async (_record, _source, outputPath) => {
     renderCount += 1;
     if (failNext) { failNext = false; throw new Error('simulated renderer failure'); }
@@ -64,8 +65,10 @@ record.workflow.stages.ingest = done; record.workflow.stages.transcript = done; 
 record.workflow.coveragePercent = 100;
 record.workflow.status = 'DIRECTOR_READY';
 record.sourceMetadata = { kind: 'local-video', durationSeconds: 60, width: 1080, height: 1920, relativePath: 'source/mock.mp4', immutable: true } as any;
+record.artifacts.transcript = 'artifacts/transcript.json';
 mkdirSync(resolve(store.projectDirectory(projectId), 'source'), { recursive: true });
 writeFileSync(resolve(store.projectDirectory(projectId), 'source/mock.mp4'), 'video');
+writeFileSync(resolve(store.artifactDirectory(projectId), 'transcript.json'), JSON.stringify({ segments: [{ id: 'segment-1', start: 0, end: 60, text: 'fixture', language: 'en', words: [] }] }));
 await store.save(record);
 
 const initialReview = createInitialReviewState({ projectId, aiPlan: policy.editPlan, beats: [beat], directorExecution: undefined }, sha256Browser(JSON.stringify(policy.editPlan)));

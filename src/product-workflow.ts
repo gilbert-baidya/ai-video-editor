@@ -67,11 +67,39 @@ export interface RenderRevision {
   approvedPlanHash: string;
 }
 
+export type ShortApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type ShortRenderStatus = 'not-started' | 'running' | 'completed' | 'failed';
+
+export interface ShortOutputRecord {
+  fileName: string;
+  relativePath: string;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  qaStatus: 'PASS' | 'FAIL';
+}
+
+export interface ShortWorkflowState {
+  approvalStatus: ShortApprovalStatus;
+  renderStatus: ShortRenderStatus;
+  approvedAt?: string;
+  rejectedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  artifactPath?: string;
+  output?: ShortOutputRecord;
+  qa?: FinalQaSummary;
+  updatedAt: string;
+}
+
 export interface ProductProjectState {
   schemaVersion: '1.2';
   projectId: string;
   title: string;
   source: ProjectSource;
+  outputTarget?: 'long-form' | 'shorts';
   status: ProductProjectStatus;
   stages: Record<ProductStage, ProductStageRecord>;
   provider: {
@@ -87,6 +115,7 @@ export interface ProductProjectState {
   renderRevisions?: RenderRevision[];
   // SHA-256 of the approved plan (JSON.stringify of the persisted plan) used by the latest render attempt.
   lastRenderedPlanHash?: string;
+  shorts?: Record<string, ShortWorkflowState>;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,10 +124,37 @@ export const productStages: ProductStage[] = ['ingest', 'transcript', 'director'
 
 const defaultStage = (): ProductStageRecord => ({ status: 'not-started', progress: 0 });
 
+export function recommendedShortState(now = new Date().toISOString()): ShortWorkflowState {
+  return { approvalStatus: 'pending', renderStatus: 'not-started', updatedAt: now };
+}
+
+export function reviewShortState(state: ShortWorkflowState, approved: boolean, now = new Date().toISOString()): ShortWorkflowState {
+  if (state.renderStatus === 'running') throw new Error('A Short cannot be reviewed while it is rendering.');
+  if (approved) {
+    return { ...state, approvalStatus: 'approved', approvedAt: now, rejectedAt: undefined, error: undefined, updatedAt: now };
+  }
+  return {
+    ...state,
+    approvalStatus: 'rejected',
+    renderStatus: state.renderStatus === 'completed' ? state.renderStatus : 'not-started',
+    approvedAt: undefined,
+    rejectedAt: now,
+    error: undefined,
+    updatedAt: now,
+  };
+}
+
+export function beginShortRender(state: ShortWorkflowState, now = new Date().toISOString()): ShortWorkflowState {
+  if (state.approvalStatus !== 'approved') throw new Error('Approve this Short before exporting it.');
+  if (state.renderStatus === 'running') throw new Error('This Short is already rendering.');
+  return { ...state, renderStatus: 'running', startedAt: now, completedAt: undefined, error: undefined, updatedAt: now };
+}
+
 export function createProductProject(input: {
   projectId: string;
   title: string;
   source: ProjectSource;
+  outputTarget?: 'long-form' | 'shorts';
   provider?: ProductProjectState['provider'];
   now?: string;
 }): ProductProjectState {
@@ -108,6 +164,7 @@ export function createProductProject(input: {
     projectId: input.projectId,
     title: input.title,
     source: input.source,
+    outputTarget: input.outputTarget ?? 'long-form',
     status: 'NEW',
     stages: {
       ingest: defaultStage(),
@@ -171,7 +228,7 @@ export function renderBlockers(project: ProductProjectState): string[] {
 }
 
 export function canRenderProject(project: ProductProjectState): boolean {
-  return renderBlockers(project).length === 0 && project.status === 'READY_TO_RENDER';
+  return renderBlockers(project).length === 0 && (project.status === 'READY_TO_RENDER' || project.status === 'QA' || project.status === 'COMPLETED');
 }
 
 // A project may be rendered again without touching its approved plan only after a render was attempted

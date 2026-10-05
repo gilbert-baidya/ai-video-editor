@@ -26,7 +26,7 @@ const capabilities: ProductCapabilities = {
   render: { state: 'AVAILABLE', detail: 'mock renderer available' },
 };
 
-function transcript(projectId: string): TranscriptDocument {
+function transcript(projectId: string, end = 2): TranscriptDocument {
   return {
     schemaVersion: '1.0',
     projectId,
@@ -41,7 +41,7 @@ function transcript(projectId: string): TranscriptDocument {
     timingConfidence: 'segment-safe',
     source: 'whisper-cli',
     model: 'office-fixture',
-    segments: [{ id: 'canonical-1', start: 0, end: 2, text: 'বিশ্বাসে স্থির থাকুন।', language: 'bn', words: [] }],
+    segments: [{ id: 'canonical-1', start: 0, end, text: 'বিশ্বাসে স্থির থাকুন।', language: 'bn', words: [] }],
     immutableOriginal: true,
     alignment: { provider: 'mock', status: 'verified', limitations: [] },
   };
@@ -50,12 +50,23 @@ function transcript(projectId: string): TranscriptDocument {
 let transcriptionCalls = 0;
 let analysisCalls = 0;
 let failAnalysis = true;
+let transcriptDurationSeconds = 2;
 const store = new ProductProjectStore(root);
 const orchestrator = new ProductOrchestrator(store, root, {
   capabilities: async () => capabilities,
+  probeSource: async () => ({
+    durationSeconds: 2,
+    containerDurationSeconds: 2,
+    videoDurationSeconds: 2,
+    audioDurationSeconds: 2,
+    durationSource: 'ffprobe',
+    probedAt: new Date().toISOString(),
+    width: 1920,
+    height: 1080,
+  }),
   transcribe: async (_source, projectId) => {
     transcriptionCalls += 1;
-    return transcript(projectId);
+    return transcript(projectId, transcriptDurationSeconds);
   },
   analyze: async () => {
     analysisCalls += 1;
@@ -124,7 +135,7 @@ try {
   assert.equal(transcriptionCalls, 1);
 
   await orchestrator.startStage(created.workflow.projectId, 'director');
-  await orchestrator.waitForStage(created.workflow.projectId, 'director');
+  await assert.rejects(() => orchestrator.waitForStage(created.workflow.projectId, 'director'), /Intentional Director fixture failure/);
   project = await store.get(created.workflow.projectId);
   assert.equal(project.workflow.stages.director.status, 'failed');
   assert.match(project.workflow.stages.director.error ?? '', /Intentional/);
@@ -193,11 +204,29 @@ try {
     source: { type: 'youtube-url', url: 'https://youtube.com/watch?v=dQw4w9WgXcQ', ingestionAvailable: false },
   });
   await orchestrator.startStage(unavailable.workflow.projectId, 'ingest');
-  await orchestrator.waitForStage(unavailable.workflow.projectId, 'ingest');
+  await assert.rejects(() => orchestrator.waitForStage(unavailable.workflow.projectId, 'ingest'), /yt-dlp is unavailable/);
   const unavailableReloaded = await store.get(unavailable.workflow.projectId);
   assert.equal(unavailableReloaded.workflow.stages.ingest.status, 'failed');
   assert.match(unavailableReloaded.workflow.stages.ingest.error ?? '', /unavailable/);
   assert.equal(unavailableReloaded.sourceMetadata, undefined);
+
+  const invalidTranscriptProject = await orchestrator.createProject({
+    title: 'Invalid transcript duration',
+    source: { type: 'local-video', fileName: 'invalid.mp4', sizeBytes: uploadBody.length },
+  });
+  const invalidRequest = Readable.from([uploadBody]) as IncomingMessage;
+  const invalidMetadata = await streamUpload(invalidRequest, store.sourceDirectory(invalidTranscriptProject.workflow.projectId), 'invalid.mp4', 'video/mp4', uploadBody.length);
+  await orchestrator.attachUploadedSource(invalidTranscriptProject.workflow.projectId, invalidMetadata);
+  transcriptDurationSeconds = 72;
+  const analysisCallsBeforeInvalidTranscript = analysisCalls;
+  await orchestrator.startStage(invalidTranscriptProject.workflow.projectId, 'transcript');
+  await assert.rejects(() => orchestrator.waitForStage(invalidTranscriptProject.workflow.projectId, 'transcript'), /TRANSCRIPT_SOURCE_DURATION_MISMATCH/);
+  const invalidTranscriptReloaded = await store.get(invalidTranscriptProject.workflow.projectId);
+  assert.equal(invalidTranscriptReloaded.workflow.stages.transcript.status, 'failed');
+  assert.match(invalidTranscriptReloaded.workflow.stages.transcript.error ?? '', /TRANSCRIPT_SOURCE_DURATION_MISMATCH/);
+  assert.equal(invalidTranscriptReloaded.artifacts.transcript, undefined, 'invalid transcript is never persisted as canonical');
+  assert.equal(analysisCalls, analysisCallsBeforeInvalidTranscript, 'Director is not launched for an invalid transcript');
+  transcriptDurationSeconds = 2;
 
   assert.deepEqual(parseProjectApiRoute(`/api/projects/${created.workflow.projectId}/status`), {
     projectId: created.workflow.projectId,
@@ -218,6 +247,7 @@ try {
       'provider provenance and canonical coverage',
       'review persistence and render gate',
       'mocked tiny render, QA aggregation, and export metadata',
+      'transcript/source duration rejection before Director invocation',
       'API route validation',
     ],
   }, null, 2));

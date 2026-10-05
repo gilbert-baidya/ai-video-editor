@@ -71,7 +71,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     return true;
   }
   if (url.pathname === '/api/projects') {
-    if (request.method === 'GET') sendJson(response, 200, { projects: await store.list() });
+    if (request.method === 'GET') sendJson(response, 200, { projects: await orchestrator.listProjects() });
     else if (request.method === 'POST') sendJson(response, 201, { project: await orchestrator.createProject(await bodyJson<CreateProjectRequest>(request)) });
     else sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', error: 'Method not allowed.' });
     return true;
@@ -82,9 +82,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     return true;
   }
   const { projectId, action } = route;
-  if (request.method === 'GET' && !action) sendJson(response, 200, { project: await store.get(projectId) });
+  if (request.method === 'GET' && !action) sendJson(response, 200, { project: await orchestrator.getProject(projectId) });
   else if (request.method === 'GET' && action === 'status') {
-    const project = await store.get(projectId);
+    const project = await orchestrator.getProject(projectId);
     sendJson(response, 200, { project, jobs: project.jobs });
   } else if (request.method === 'GET' && action === 'qa') {
     const project = await store.get(projectId);
@@ -100,6 +100,15 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const relativePath = action === 'source' ? project.sourceMetadata?.relativePath : project.artifacts.render;
     if (!relativePath) throw new Error(`${action} artifact is unavailable.`);
     await streamManagedFile(response, request, assertWithinRoot(store.projectDirectory(projectId), resolve(store.projectDirectory(projectId), relativePath)));
+  } else if (request.method === 'GET' && action === 'short-output') {
+    const shortId = url.searchParams.get('shortId');
+    if (!shortId) throw new Error('shortId query parameter is required.');
+    const project = await store.get(projectId);
+    const short = project.workflow.shorts?.[shortId];
+    if (!short || short.renderStatus !== 'completed' || short.output?.qaStatus !== 'PASS' || !short.artifactPath) {
+      throw new Error('This Short does not have a completed, QA-passed export.');
+    }
+    await streamManagedFile(response, request, assertWithinRoot(store.projectDirectory(projectId), resolve(store.projectDirectory(projectId), short.artifactPath)));
   } else if (request.method === 'GET' && action === 'asset') {
     // Serves only media that the project's own review workspace indexes and that lives inside the project directory.
     const assetId = url.searchParams.get('assetId');
@@ -122,7 +131,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   } else if (request.method === 'POST' && ['ingest', 'transcribe', 'analyze', 'director', 'render', 'qa'].includes(action ?? '')) {
     const stage: 'ingest' | 'transcript' | 'director' | 'render' | 'qa' =
       action === 'transcribe' ? 'transcript' : action === 'analyze' || action === 'director' ? 'director' : action as any;
-    sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage) });
+    const input = request.headers['content-length'] && Number(request.headers['content-length']) > 0 ? await bodyJson<any>(request).catch(() => undefined) : undefined;
+    sendJson(response, 202, { job: await orchestrator.startStage(projectId, stage, input) });
   } else if (request.method === 'POST' && action === 'rerender') {
     const input = await bodyJson<{ reason: string }>(request);
     sendJson(response, 202, { job: await orchestrator.rerender(projectId, input.reason) });
@@ -132,6 +142,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   } else if (request.method === 'PUT' && action === 'review') {
     const input = await bodyJson<{ review: ReviewState }>(request);
     sendJson(response, 200, { project: await orchestrator.saveReview(projectId, input.review) });
+  } else if (request.method === 'PUT' && action === 'short-review') {
+    const input = await bodyJson<{ shortId: string; approved: boolean }>(request);
+    if (typeof input.shortId !== 'string' || typeof input.approved !== 'boolean') throw new Error('shortId and approved are required.');
+    sendJson(response, 200, { project: await orchestrator.reviewShort(projectId, input.shortId, input.approved) });
   } else sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', error: 'Method not allowed for this project route.' });
   return true;
 }

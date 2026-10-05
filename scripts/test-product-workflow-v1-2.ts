@@ -64,7 +64,7 @@ const bundle = await build({
   jsx: 'automatic',
 });
 const browserCode = bundle.outputFiles.find((output) => output.path.endsWith('.js'))?.text ?? '';
-if (!browserCode.includes('AI VIDEO EDITOR')) throw new Error('Product workspace is missing from browser bundle.');
+if (!browserCode.includes('AI Video Editor') || !browserCode.includes('Canonical Edition v2')) throw new Error('Product workspace is missing from browser bundle.');
 if (browserCode.includes('node:crypto') || browserCode.includes('createHash')) throw new Error('Browser bundle still contains Node hashing dependencies.');
 
 console.log(JSON.stringify({

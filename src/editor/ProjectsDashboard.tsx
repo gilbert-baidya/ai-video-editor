@@ -1,7 +1,7 @@
 import React from 'react';
 import type { ProductCapabilities, ProductProjectRecord } from '../product-api.ts';
 import { productStages } from '../product-workflow.ts';
-import { formatTimecode } from './editor-model.ts';
+import { formatTimecode, sourceDurationBlockers } from './editor-model.ts';
 
 const tone = (state: string): string => state === 'AVAILABLE' ? 'on' : state === 'DEGRADED' ? 'warn' : 'off';
 
@@ -35,11 +35,14 @@ export const ProjectsDashboard: React.FC<{
   <div className="ve-project-grid">
     {projects.map((item) => {
       const meta = item.sourceMetadata;
-      return <button type="button" key={item.workflow.projectId} className={`ve-project-card status-${item.workflow.status.toLowerCase()}`} data-project-id={item.workflow.projectId} onClick={() => onOpen(item)}>
-        <div className="ve-project-top"><b>{item.workflow.title}</b><span className="ve-chip">{item.workflow.status.replaceAll('_', ' ')}</span></div>
+      const durationBlocked = sourceDurationBlockers(item).length > 0;
+      const displayedDuration = item.sourceDurationValidation?.physicalDurationSeconds ?? meta?.durationSeconds;
+      return <button type="button" key={item.workflow.projectId} className={`ve-project-card status-${durationBlocked ? 'failed' : item.workflow.status.toLowerCase()}`} data-project-id={item.workflow.projectId} onClick={() => onOpen(item)}>
+        <div className="ve-project-top"><b>{item.workflow.title}</b><span className="ve-chip">{durationBlocked ? 'RENDER BLOCKED' : item.workflow.status.replaceAll('_', ' ')}</span></div>
         <div className="ve-stage-dots" aria-label="Workflow stages">{productStages.map((stage) => <span key={stage} className={`ve-stage-dot ${item.workflow.stages[stage].status}`} title={`${stage}: ${item.workflow.stages[stage].status}`} />)}</div>
-        <small>{meta?.width && meta.height ? `${meta.width}×${meta.height} · ${meta.width < meta.height ? 'portrait' : 'landscape'}` : 'Source metadata pending'}{meta?.durationSeconds ? ` · ${formatTimecode(meta.durationSeconds)}` : ''}</small>
+        <small>{meta?.width && meta.height ? `${meta.width}×${meta.height} · ${meta.width < meta.height ? 'portrait' : 'landscape'}` : 'Source metadata pending'}{displayedDuration ? ` · ${formatTimecode(displayedDuration)}` : ''}</small>
         <small>Updated {new Date(item.workflow.updatedAt).toLocaleString()}</small>
+        {durationBlocked && <small className="bad">Source duration mismatch</small>}
         {item.output && <small className={item.output.qaStatus === 'PASS' ? 'ok' : 'bad'}>Export QA: {item.output.qaStatus}</small>}
       </button>;
     })}

@@ -80,10 +80,10 @@ export async function streamUpload(
 }
 
 export async function probeSource(path: string, ffprobe: ProductCapability): Promise<Partial<SourceMetadata>> {
-  if (ffprobe.state !== 'AVAILABLE') return {};
+  if (ffprobe.state !== 'AVAILABLE') throw new Error(`Source duration cannot be verified because ffprobe is unavailable. ${ffprobe.detail}`);
   const executablePath = ffprobe.detail.split(' is available.')[0];
   const output = await new Promise<string>((done, reject) => {
-    const child = spawn(executablePath, ['-v', 'error', '-show_entries', 'format=duration,size:stream=width,height:stream_tags=rotate:stream_side_data=rotation', '-select_streams', 'v:0', '-of', 'json', path]);
+    const child = spawn(executablePath, ['-v', 'error', '-show_entries', 'format=duration,size:stream=index,codec_type,duration,width,height:stream_tags=rotate:stream_side_data=rotation', '-of', 'json', path]);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -93,8 +93,19 @@ export async function probeSource(path: string, ffprobe: ProductCapability): Pro
   });
   const parsed = JSON.parse(output) as VideoProbeResult;
   const dimensions = effectiveVideoDimensions(parsed);
+  const containerDurationSeconds = positiveDuration(parsed.format?.duration);
+  const videoDurationSeconds = streamDuration(parsed, 'video');
+  const audioDurationSeconds = streamDuration(parsed, 'audio');
+  const durationSeconds = containerDurationSeconds ?? Math.max(videoDurationSeconds ?? 0, audioDurationSeconds ?? 0);
+  if (!(durationSeconds > 0)) throw new Error('Source duration cannot be verified because ffprobe did not report a positive container, video, or audio duration.');
+  if (!dimensions) throw new Error('Source orientation is unknown because ffprobe did not report video dimensions.');
   return {
-    durationSeconds: Number(parsed.format?.duration ?? 0),
+    durationSeconds,
+    containerDurationSeconds,
+    videoDurationSeconds,
+    audioDurationSeconds,
+    durationSource: 'ffprobe',
+    probedAt: new Date().toISOString(),
     sizeBytes: Number(parsed.format?.size ?? (await stat(path)).size),
     width: dimensions?.width,
     height: dimensions?.height,
@@ -104,6 +115,9 @@ export async function probeSource(path: string, ffprobe: ProductCapability): Pro
 export interface VideoProbeResult {
   format?: { duration?: string; size?: string };
   streams?: Array<{
+    index?: number;
+    codec_type?: string;
+    duration?: string;
     width?: number;
     height?: number;
     tags?: { rotate?: string };
@@ -112,11 +126,24 @@ export interface VideoProbeResult {
 }
 
 export function effectiveVideoDimensions(probe: VideoProbeResult): { width: number; height: number } | undefined {
-  const stream = probe.streams?.[0];
+  const stream = probe.streams?.find((candidate) => candidate.codec_type === 'video' || (candidate.width && candidate.height));
   if (!stream?.width || !stream.height) return undefined;
   const rotation = Number(stream.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation ?? stream.tags?.rotate ?? 0);
   const quarterTurn = Math.abs(rotation) % 180 === 90;
   return quarterTurn ? { width: stream.height, height: stream.width } : { width: stream.width, height: stream.height };
+}
+
+function positiveDuration(value: string | undefined): number | undefined {
+  const duration = Number(value);
+  return Number.isFinite(duration) && duration > 0 ? duration : undefined;
+}
+
+function streamDuration(probe: VideoProbeResult, type: 'video' | 'audio'): number | undefined {
+  const durations = (probe.streams ?? [])
+    .filter((stream) => stream.codec_type === type)
+    .map((stream) => positiveDuration(stream.duration))
+    .filter((duration): duration is number => duration !== undefined);
+  return durations.length ? Math.max(...durations) : undefined;
 }
 
 export async function fingerprintExistingSource(path: string): Promise<string> {

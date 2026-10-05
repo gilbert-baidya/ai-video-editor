@@ -27,6 +27,7 @@ const store = new ProductProjectStore(resolve(root, 'projects'));
 let renders = 0;
 const orchestrator = new ProductOrchestrator(store, process.cwd(), {
   capabilities: async () => ({ render: { state: 'AVAILABLE', detail: 'stub' } }) as any,
+  probeSource: async () => ({ durationSeconds: 72, containerDurationSeconds: 72, videoDurationSeconds: 72, audioDurationSeconds: 72, durationSource: 'ffprobe', width: 1080, height: 1920 }),
   render: async (_record, _source, outputPath) => {
     renders += 1;
     writeFileSync(outputPath, `render-${renders}`);
@@ -46,8 +47,10 @@ Object.assign(record.workflow.stages, { ingest: done, transcript: done, director
 record.workflow.coveragePercent = 100;
 record.workflow.status = 'DIRECTOR_READY';
 record.sourceMetadata = { kind: 'local-video', durationSeconds: 72, width: 1080, height: 1920, relativePath: 'source/mock.mp4', immutable: true } as any;
+record.artifacts.transcript = 'artifacts/transcript.json';
 mkdirSync(resolve(store.projectDirectory(projectId), 'source'), { recursive: true });
 writeFileSync(resolve(store.projectDirectory(projectId), 'source/mock.mp4'), 'video');
+writeFileSync(resolve(store.artifactDirectory(projectId), 'transcript.json'), JSON.stringify({ segments: [{ id: 'segment-1', start: 0, end: 72, text: 'fixture', language: 'en', words: [] }] }));
 await store.save(record);
 const initialReview = createInitialReviewState({ projectId, aiPlan, beats, directorExecution: undefined }, sha256Browser(JSON.stringify(aiPlan)));
 const workspacePath = resolve(store.artifactDirectory(projectId), 'review-workspace.json');

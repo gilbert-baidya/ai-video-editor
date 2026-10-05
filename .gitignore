@@ -33,3 +33,4 @@ public/.product-runtime/
 
 .env.local
 .env
+scripts/phase-a-ingest.ts

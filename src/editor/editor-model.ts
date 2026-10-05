@@ -4,6 +4,7 @@ import type { ReviewDataPayload } from '../DirectorReviewWorkspace.tsx';
 import { operationBeatId, type ReviewBeat, type ReviewState } from '../director-review.ts';
 import type { ProductProjectRecord } from '../product-api.ts';
 import { canRenderProject, finalQaPassed, renderBlockers, rerenderBlockers, type ProductStageStatus } from '../product-workflow.ts';
+import { SOURCE_DURATION_TOLERANCE_SECONDS, sourceDurationMismatchMessage } from '../source-duration.ts';
 
 // ───────────────────────── Time helpers ─────────────────────────
 
@@ -153,14 +154,26 @@ export function previewFrameAt(plan: EditPlan, assets: MediaAsset[], seconds: nu
 // ───────────────────────── Timeline reconciliation ─────────────────────────
 
 // Reports disagreements between the approved timeline and the media that actually exists; never hides them.
-export function reconcileTimeline(input: { planDurationSeconds: number; sourceMetadataSeconds?: number; measuredSourceSeconds?: number }): string[] {
+export function reconcileTimeline(input: { planDurationSeconds: number; sourceMetadataSeconds?: number; measuredSourceSeconds?: number; physicalSourceSeconds?: number }): string[] {
   const issues: string[] = [];
-  const tolerance = 0.5;
-  const { planDurationSeconds: plan, sourceMetadataSeconds: metadata, measuredSourceSeconds: measured } = input;
+  const tolerance = SOURCE_DURATION_TOLERANCE_SECONDS;
+  const { planDurationSeconds: plan, sourceMetadataSeconds: metadata, measuredSourceSeconds: measured, physicalSourceSeconds: physical } = input;
+  if (physical !== undefined && plan > physical + tolerance) issues.push(sourceDurationMismatchMessage(physical, plan));
   if (metadata !== undefined && Math.abs(metadata - plan) > tolerance) issues.push(`The approved timeline runs to ${plan.toFixed(1)} s but the recorded source duration is ${metadata.toFixed(1)} s.`);
   if (measured !== undefined && Math.abs(measured - plan) > tolerance) issues.push(`The source video in the browser is ${measured.toFixed(1)} s long but the approved timeline runs to ${plan.toFixed(1)} s. Footage after ${measured.toFixed(1)} s does not exist.`);
   if (metadata !== undefined && measured !== undefined && Math.abs(metadata - measured) > tolerance) issues.push(`Recorded source duration (${metadata.toFixed(1)} s) disagrees with the playable source (${measured.toFixed(1)} s).`);
   return issues;
+}
+
+export function sourceDurationBlockers(project: ProductProjectRecord): string[] {
+  const validation = project.sourceDurationValidation;
+  if (!validation || validation.status === 'verified') return [];
+  const physical = validation.physicalDurationSeconds;
+  const timeline = validation.approvedTimelineEndSeconds;
+  const primary = physical !== undefined && timeline !== undefined && timeline > physical + validation.toleranceSeconds
+    ? sourceDurationMismatchMessage(physical, timeline)
+    : undefined;
+  return [...new Set([...(primary ? [primary] : []), ...validation.failures])];
 }
 
 // ───────────────────────── Operation inspector ─────────────────────────
@@ -278,7 +291,7 @@ export function buildPipeline(project: ProductProjectRecord, broll?: BrollStatus
   const exportStep = worst([stages.render.status, stages.qa.status]);
   const coverage = project.workflow.coveragePercent;
   return [
-    { id: 'analyze', label: 'Analyze Sermon', status: analyze, detail: analyze === 'completed' ? 'Source ingested and canonical transcript ready.' : `Ingest: ${stages.ingest.status} · Transcript: ${stages.transcript.status}`, progress: progressOf('ingest', 'transcript'), error: errorOf('ingest', 'transcript') },
+    { id: 'analyze', label: 'Analyze Video', status: analyze, detail: analyze === 'completed' ? 'Source ingested and canonical transcript ready.' : `Ingest: ${stages.ingest.status} · Transcript: ${stages.transcript.status}`, progress: progressOf('ingest', 'transcript'), error: errorOf('ingest', 'transcript') },
     { id: 'plan', label: 'Generate Plan', status: plan, detail: directorDone ? `${project.workflow.provider.name}${project.workflow.provider.model ? ` · ${project.workflow.provider.model}` : ''} · ${coverage}% transcript coverage${project.workflow.provider.fallbackUsed ? ' · fallback used' : ''}` : `Director: ${plan}`, progress: progressOf('director'), error: errorOf('director') },
     { id: 'broll', label: 'Match B-roll', status: brollStatus, detail: brollDetail },
     { id: 'review', label: 'Review & Edit', status: stages.review.status, detail: stages.review.status === 'completed' ? 'Human review approved.' : `Review: ${stages.review.status}`, progress: progressOf('review'), error: errorOf('review') },
@@ -316,10 +329,14 @@ export function exportStatus(project: ProductProjectRecord): ExportVerdict {
   if (qa?.editorial) failures.push(...qa.editorial.failures);
   if (qa?.mediaExport?.failures) failures.push(...qa.mediaExport.failures);
   if (qa?.audioContinuity?.failures) failures.push(...qa.audioContinuity.failures);
-  const blockers = renderBlockers(project.workflow);
-  const canRender = canRenderProject(project.workflow);
-  const canRerender = rerenderBlockers(project.workflow).length === 0;
+  const durationBlockers = sourceDurationBlockers(project);
+  const blockers = [...durationBlockers, ...renderBlockers(project.workflow)];
+  const canRender = durationBlockers.length === 0 && canRenderProject(project.workflow);
+  const canRerender = durationBlockers.length === 0 && rerenderBlockers(project.workflow).length === 0;
   const base = { gates, failures, canRender, canRerender, blockers };
+  if (durationBlockers.length) {
+    return { ...base, state: 'NOT_READY', headline: 'Rendering blocked', detail: durationBlockers[0] };
+  }
   const renderJob = project.jobs.slice().reverse().find((job) => job.stage === 'render' && job.status === 'running');
   if (stages.render.status === 'running' || stages.qa.status === 'running') {
     return { ...base, state: 'RENDERING', headline: 'Rendering', detail: renderJob?.message ?? 'The Remotion renderer is producing the export.', progress: renderJob?.progress ?? stages.render.progress };
