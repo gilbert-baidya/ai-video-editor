@@ -161,6 +161,156 @@ All required regression checks pass after the prompt and boundary corrections:
 - `npm run test-source-duration-integrity-v1-3-9`
 - `npm run test-product-orchestration-v1-3`
 
-## Final verdict
+## Phase 7C.2 verdict (superseded by Phase 7C.3)
 
 **FAIL**
+
+# Phase 7C.3 — Final Acceptance
+
+## ASR Timing Root Cause
+
+The configured Gemini model returned useful segment-level Bengali/Banglish transcription, but word timing was not consistently trustworthy. One earlier real UI attempt returned an out-of-range word timestamp. Treating every returned word array as mandatory would reject otherwise usable segment transcription; repairing that data would fabricate evidence.
+
+## Final Timing Contract
+
+Segment timing is authoritative when it is finite, ordered, positive, and within the verified physical source duration. `TranscriptSegment.words` is optional. Valid provider word timings are preserved when present. Captions and boundary validation fall back to segment timing, punctuation, neighboring segments, pause evidence, and physical duration when words are unavailable.
+
+## No-Fabrication Guarantee
+
+No word timestamps are interpolated, evenly distributed, clipped, or moved to satisfy validation. If Gemini omits words, the segment remains segment-timed. If a returned word array is malformed, it is discarded for that segment and the transcript records an explicit alignment limitation rather than fabricated replacement timing.
+
+## Acceptance Project ID
+
+`project-68a40ce7-1db2-49ac-a668-877dcb93b227`
+
+## Source Duration
+
+`60.014s`, verified by ffprobe during the normal UI YouTube import flow.
+
+## Transcription Provider / Model
+
+- Provider: Gemini cloud ASR
+- Model: `gemini-3.1-pro-preview`
+- Source: authorized `https://youtube.com/shorts/lPN9AWaTuEc`
+- No transcript, candidate, project JSON, or job state was injected.
+
+## Bengali Evidence
+
+The persisted real transcript included native Bengali such as:
+
+- `বললো আপনার কাছে আমাদের কিছু দাবি আছে`
+- `যখন রাজা এই কথা শুনলেন শোনার পরে রাজা বললেন আচ্ছা বলো তো কি হইছে ঘটনাটা কি`
+- `রাজা স্বীকার করছেন`
+- `আমার গোডাউন খালি`
+
+## Banglish Evidence
+
+The persisted transcript preserved the mixed-language phrase:
+
+`আমি ব্যর্থ আমি loser`
+
+This remained native Bengali plus the spoken English word `loser`, rather than transliterating or translating the English.
+
+## Transcript Integrity
+
+PASS. The fresh UI transcript was classified as mixed, retained Bengali script and code-switching, had ordered segment timing within `60.014s`, and contained valid provider word timings. No placeholder, unsupported-script substitution, malformed Unicode, repeated tail, or beyond-source segment was accepted.
+
+## Gemini Candidates
+
+The final fresh UI analysis returned one candidate:
+
+| Candidate | Score | Suggested range | Duration | Result |
+|---|---:|---:|---:|---|
+| `রাজার স্বীকারোক্তি: আমি ব্যর্থ!` | `8.5/10` | `00:00.0–00:51.5` | `51.5s` | Selected |
+
+The earlier final-acceptance project also returned a whole-source English-titled candidate ending on an ellipsis. It was not used as final evidence. The validator now treats an ellipsis as unfinished rather than a complete sentence endpoint.
+
+## Selected Candidate
+
+`রাজার স্বীকারোক্তি: আমি ব্যর্থ!`
+
+Subtitle: `একমাত্র ঈশ্বরই সবকিছুর যোগানদাতা`
+
+## Suggested Range
+
+`00:00.01–00:51.5`
+
+## Safe Range
+
+`00:00.01–00:54.8` (`54.79s`)
+
+The UI displayed the adjustment and the reason: `Ending extended to preserve complete speech.`
+
+## Boundary Reason
+
+The selected candidate ended during an active thought. The deterministic validator extended the range through the complete segment ending at `54.8s`, then stopped before the later `প্রিয় মন্ডলী / স্ত্রীলোকটি বললেন` continuation. This avoided the earlier invalid ending on `প্রিয় মন্ডলী, স্ত্রী লোকটি বললেন,`.
+
+## Final Ending
+
+The final rendered range ends with the complete spoken segment:
+
+`তারপর রাজা জিজ্ঞেস করলেন তোমার কি হইছে সমাচার কি`
+
+It does not end on the later incomplete phrase `স্ত্রীলোকটি বললেন`. The final second was included in the watched/frame-reviewed output; no abrupt source cut or incomplete final-thought caption was observed.
+
+## Render Behavior
+
+The normal UI approval/export flow started Remotion rendering. The initial render completed successfully and produced the final output; the one-time `concurrency: 1` retry path was available but was not needed for this run. No global browser process was killed and no render failure was hidden.
+
+## Final MP4 Path
+
+`/Volumes/Personal/Cool App/ai-video-editor/app/ai-video-editor/.runtime/projects/project-68a40ce7-1db2-49ac-a668-877dcb93b227/output/short-short-project-68a40ce7-1db2-49ac-a668-877dcb93b227-0.mp4`
+
+## ffprobe Results
+
+- Container: MP4
+- Video: H.264, `1080×1920`, `54.800s`
+- Audio: AAC, `48kHz`, stereo, `54.848s`
+- Application media QA: PASS
+- Duration corresponds to the validated `54.8s` safe range within normal stream/container tolerance.
+
+## Decode Result
+
+PASS. Independent ffmpeg video and audio null decodes completed without errors.
+
+## Black/Freeze QA
+
+PASS. Independent `blackdetect`/`freezedetect` inspection found no meaningful black or frozen interval.
+
+## Frame Review
+
+Representative frames at approximately `1s`, `25%`, `50%`, `75%`, and the final second showed:
+
+- speaker visible throughout sampled frames;
+- valid vertical 9:16 composition with no black output;
+- Bengali glyphs rendered correctly;
+- English code-switching retained in the transcript/caption path;
+- no overflow or frame corruption;
+- complete final content rather than the prior unfinished ending.
+
+The source contains a persistent lower-third/ticker. Several sampled captions overlap that existing lower-third/ticker, which is readable but visually crowded.
+
+## Human Quality Scores
+
+| Dimension | Score |
+|---|---:|
+| Bengali transcription accuracy | 8/10 |
+| English/code-switching accuracy | 8/10 |
+| Caption accuracy | 8/10 |
+| Caption synchronization | 8/10 |
+| Hook quality | 8/10 |
+| Standalone meaning | 8/10 |
+| Opening boundary | 8/10 |
+| Ending boundary | 9/10 |
+| Vertical framing | 8/10 |
+| Audio quality/continuity | 8/10 |
+| Visual quality | 7/10 |
+| Overall publishability | 7/10 |
+
+## Remaining Issues
+
+The generated MP4 is technically valid and semantically coherent, but the caption placement competes with the source lower-third and scrolling ticker in sampled frames. A small visual edit to move or restyle captions would improve publishability. This is a cosmetic presentation issue, not an ASR timing, boundary, render, or media-integrity failure.
+
+## Final Verdict
+
+**PASS — NEEDS MINOR EDIT**

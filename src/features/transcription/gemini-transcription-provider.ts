@@ -79,6 +79,7 @@ export class GeminiTranscriptionProvider implements TranscriptionProvider {
     if (!Array.isArray(parsed.segments) || parsed.segments.length === 0) throw new Error('Gemini ASR returned no transcript segments.');
 
     const segments: TranscriptSegment[] = [];
+    let wordTimingLimitation = false;
     let previousStart = -1;
     for (let index = 0; index < parsed.segments.length; index += 1) {
       const raw = parsed.segments[index];
@@ -90,28 +91,33 @@ export class GeminiTranscriptionProvider implements TranscriptionProvider {
         throw new Error(`Gemini ASR returned an invalid segment range ${String(raw.start)}-${String(raw.end)}.`);
       }
       const segmentLanguage = languageProfile(raw.language);
-      const words: TranscriptWord[] = (raw.words ?? []).map((word, wordIndex) => {
+      const normalizedWords: TranscriptWord[] = [];
+      let invalidWordTiming = false;
+      for (const [wordIndex, word] of (raw.words ?? []).entries()) {
         const wordStart = Number(word.start);
         const wordEnd = Number(word.end);
         if (!word.text?.trim() || !Number.isFinite(wordStart) || !Number.isFinite(wordEnd)
           || wordStart < start || wordEnd <= wordStart || wordEnd > end) {
-          throw new Error(`Gemini ASR returned invalid word timing in segment ${index + 1}, word ${wordIndex + 1}.`);
+          invalidWordTiming = true;
+          break;
         }
-        return {
+        normalizedWords.push({
           id: `word-${index + 1}-${wordIndex + 1}`,
           text: word.text.trim(),
           start: wordStart,
           end: wordEnd,
           language: segmentLanguage,
-        };
-      });
+        });
+      }
+      const words = invalidWordTiming ? undefined : normalizedWords;
+      if (invalidWordTiming) wordTimingLimitation = true;
       segments.push({
         id: `segment-${segments.length + 1}`,
         start,
         end,
         text,
         language: segmentLanguage,
-        words,
+        ...(words ? { words } : {}),
       });
       previousStart = start;
     }
@@ -131,15 +137,19 @@ export class GeminiTranscriptionProvider implements TranscriptionProvider {
       transcriptionProvider: this.name,
       transcriptionModel: this.modelName,
       approved: false,
-      timingConfidence: segments.some((segment) => segment.words.length > 0) ? 'word-safe' : 'segment-safe',
+      timingConfidence: segments.some((segment) => (segment.words ?? []).length > 0) ? 'word-safe' : 'segment-safe',
       source: 'cloud-asr',
       model: this.modelName,
       segments,
       immutableOriginal: true,
       alignment: {
         provider: this.name,
-        status: segments.some((segment) => segment.words.length > 0) ? 'verified' : 'partial',
-        limitations: segments.some((segment) => segment.words.length > 0) ? [] : ['The provider returned segment timing without word timing.'],
+        status: segments.some((segment) => (segment.words ?? []).length > 0) && !wordTimingLimitation ? 'verified' : 'partial',
+        limitations: wordTimingLimitation
+          ? ['The provider returned malformed optional word timing; segment timing was retained without fabricated replacement words.']
+          : segments.some((segment) => (segment.words ?? []).length > 0)
+            ? []
+            : ['The provider returned segment timing without word timing.'],
       },
     };
   }

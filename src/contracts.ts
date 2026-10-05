@@ -323,7 +323,7 @@ export interface TranscriptSegment {
   text: string;
   language: LanguageProfile;
   confidence?: number;
-  words: TranscriptWord[];
+  words?: TranscriptWord[];
 }
 
 export interface TranscriptDocument {

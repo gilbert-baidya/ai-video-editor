@@ -23,6 +23,16 @@ function makeSegment(
   };
 }
 
+function makeSegmentWithoutWords(id: string, start: number, end: number, text: string): TranscriptSegment {
+  return {
+    id,
+    start,
+    end,
+    text,
+    language: /[\u0980-\u09ff]/u.test(text) ? 'bn' : 'en',
+  };
+}
+
 function transcript(segments: TranscriptSegment[]): TranscriptDocument {
   const text = segments.map((segment) => segment.text).join(' ');
   return {
@@ -76,6 +86,37 @@ assert.match(corrected.boundaryAdjustmentReason ?? '', /complete thought/u);
 const sourceLimited = correctShortBoundaries(candidate, transcript(segments), 68);
 assert.equal(sourceLimited.sourceEndSeconds, 68, 'physical duration clamps the corrected endpoint');
 assert.ok(sourceLimited.sourceEndSeconds <= 68, 'corrected end never exceeds the verified source');
+
+const segmentTimedTranscript = transcript([
+  makeSegmentWithoutWords('segment-only-1', 0, 20, 'এটি একটি সম্পূর্ণ বাক্য।'),
+makeSegmentWithoutWords('segment-only-2', 21, 40, 'This thought remains unfinished'),
+]);
+const segmentTimedCandidate: ExtractedShort = {
+  ...candidate,
+  id: 'segment-timed-fixture',
+  sourceSegmentIds: ['segment-only-1'],
+  sourceStartSeconds: 0,
+  sourceEndSeconds: 20,
+  durationEstimateSeconds: 20,
+};
+const segmentTimedCorrection = correctShortBoundaries(segmentTimedCandidate, segmentTimedTranscript, 40);
+assert.equal(segmentTimedCorrection.sourceEndSeconds, 20, 'segment timing supports safe boundaries without word timing');
+assert.throws(
+  () => correctShortBoundaries({ ...segmentTimedCandidate, sourceSegmentIds: ['segment-only-2'], sourceStartSeconds: 21, sourceEndSeconds: 40 }, segmentTimedTranscript, 40),
+  /complete-thought boundary/u,
+  'unterminated final segment cannot be accepted as a complete endpoint',
+);
+assert.throws(
+  () => correctShortBoundaries({
+    ...segmentTimedCandidate,
+    id: 'ellipsis-fixture',
+    sourceSegmentIds: ['segment-only-2'],
+    sourceStartSeconds: 21,
+    sourceEndSeconds: 40,
+  }, transcript([makeSegmentWithoutWords('segment-only-2', 21, 40, 'This thought trails off...')]), 40),
+  /complete-thought boundary/u,
+  'an ellipsis cannot be treated as a complete final thought',
+);
 
 const placeholder = '(speaking in foreign language)';
 assert.equal(measureTranscriptIntegrity(placeholder, [{ text: placeholder }]).status, 'FAIL');

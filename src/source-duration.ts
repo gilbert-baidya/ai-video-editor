@@ -21,7 +21,7 @@ export function sourceDurationMismatchDiagnostic(physicalSeconds: number, requir
 export function transcriptEndSeconds(transcript: TranscriptDocument): number {
   const boundaries = transcript.segments.flatMap((segment) => [
     segment.end,
-    ...segment.words.map((word) => word.end),
+    ...(segment.words ?? []).map((word) => word.end),
   ]);
   if (transcript.sentences) boundaries.push(...transcript.sentences.map((sentence) => sentence.end));
   return boundaries.filter(finiteTime).reduce((latest, value) => Math.max(latest, value), 0);
@@ -53,7 +53,7 @@ export function validateTranscriptTiming(
     }
     if (segment.start < previousStart) failures.push(`TRANSCRIPT_TIMING_INVALID: Segment ${segment.id} is out of chronological order.`);
     previousStart = segment.start;
-    for (const word of segment.words) {
+    for (const word of segment.words ?? []) {
       if (!finiteTime(word.start) || !finiteTime(word.end) || word.start < 0 || word.end < word.start) {
         failures.push(`TRANSCRIPT_TIMING_INVALID: Word ${word.id} has an invalid ${String(word.start)}-${String(word.end)} second range.`);
       } else if (word.start < segment.start - toleranceSeconds || word.end > segment.end + toleranceSeconds) {

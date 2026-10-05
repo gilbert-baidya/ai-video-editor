@@ -204,7 +204,7 @@ export async function transcribeAndAlign(
         : hasEnglishText
           ? 'en'
           : 'mixed';
-  const hasUsableWords = segments.some((segment) => segment.words.some((word) => word.end > word.start));
+  const hasUsableWords = segments.some((segment) => (segment.words ?? []).some((word) => word.end > word.start));
   const qualityFailures = transcriptQualityFailures(originalTranscript, segments, transcriptLanguage);
   if (qualityFailures.length) throw new Error(`Transcription quality failed. ${qualityFailures.join(' ')}`);
   return {
@@ -221,7 +221,7 @@ export async function transcribeAndAlign(
 }
 
 export function createFoundationPlan(transcript: TranscriptDocument): EditPlan {
-  const words = transcript.segments.flatMap((segment) => segment.words).filter((word) => word.end > word.start);
+  const words = transcript.segments.flatMap((segment) => segment.words ?? []).filter((word) => word.end > word.start);
   const start = words[0]?.start ?? 18.4;
   const end = words[Math.min(words.length - 1, 18)]?.end ?? 28.2;
   const graphicStart = Math.max(end, 28.2);
@@ -266,9 +266,9 @@ export function createQa(transcript: TranscriptDocument, plan: EditPlan, duratio
   if (!transcript.originalTranscript) transcriptFailures.push('Original transcript is empty.');
   const integrity = measureTranscriptIntegrity(transcript.originalTranscript, transcript.segments);
   if (integrity.status !== 'PASS' && !transcript.approved && transcript.textSource !== 'hybrid-reviewed') transcriptFailures.push(`Transcript integrity requires review (${integrity.status}).`);
-  const words = transcript.segments.flatMap((segment) => segment.words);
+  const words = transcript.segments.flatMap((segment) => segment.words ?? []);
   if (!words.length) transcriptFailures.push('No word timestamps were produced.');
-  if (transcript.segments.some((segment) => segment.words.some((word, index, segmentWords) => word.end < word.start || (index > 0 && word.start < segmentWords[index - 1].start)))) transcriptFailures.push('Word timestamps are out of order within a segment.');
+  if (transcript.segments.some((segment) => (segment.words ?? []).some((word, index, segmentWords) => word.end < word.start || (index > 0 && word.start < segmentWords[index - 1].start)))) transcriptFailures.push('Word timestamps are out of order within a segment.');
   const editFailures = validatePlan(plan, duration);
   return {
     schemaVersion: '1.0', projectId: plan.projectId, passed: false,

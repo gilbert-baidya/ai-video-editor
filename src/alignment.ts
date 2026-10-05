@@ -121,7 +121,7 @@ export function measureAlignment(document: RawWhisperDocument, normalized: Trans
       if (start < segmentStart || end > segmentEnd) tokenOutsideSegmentCount += 1;
       if (end - start > 1.5) suspiciouslyLongTokenCount += 1;
       previousEnd = end;
-      const normalizedWordValue = normalized.segments[segmentIndex]?.words[normalizedTokenIndex];
+      const normalizedWordValue = normalized.segments[segmentIndex]?.words?.[normalizedTokenIndex];
       if (normalizedWordValue?.normalizationApplied) normalizedTokenCount += 1;
       normalizedTokenIndex += 1;
     });
@@ -143,7 +143,7 @@ export function measureAlignment(document: RawWhisperDocument, normalized: Trans
 }
 
 export function createAlignmentSamples(transcript: TranscriptDocument, source: string): AlignmentSample[] {
-  return transcript.segments.flatMap((segment) => segment.words.filter((word) => word.text.length > 0).slice(0, 3).map((word) => ({
+  return transcript.segments.flatMap((segment) => (segment.words ?? []).filter((word) => word.text.length > 0).slice(0, 3).map((word) => ({
     segmentId: segment.id,
     start: word.start,
     end: word.end,

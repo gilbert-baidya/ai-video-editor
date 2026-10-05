@@ -8,11 +8,11 @@ const NATURAL_PAUSE_SECONDS = 0.85;
 const MAX_SHORT_SECONDS = 120;
 
 function isSentenceTerminated(text: string): boolean {
-  return /[।.!?！？]["'’”)\]]*\s*$/u.test(text.trim());
+  return /(?:[।!?！？]|(?<!\.)\.)["'’”)\]]*\s*$/u.test(text.trim());
 }
 
 function speechEnd(segment: TranscriptSegment): number {
-  const timedWords = segment.words.filter((word) => word.end > word.start);
+  const timedWords = (segment.words ?? []).filter((word) => word.end > word.start);
   return timedWords.at(-1)?.end ?? segment.end;
 }
 
@@ -37,7 +37,7 @@ function assertNotInsideWord(
   time: number,
   edge: 'start' | 'end',
 ): void {
-  const word = segments[segmentIndex].words.find((item) =>
+  const word = (segments[segmentIndex].words ?? []).find((item) =>
     item.start < time && item.end > time,
   );
   if (word) throw new Error(`Short ${edge} falls inside transcript word ${word.id}.`);
@@ -93,11 +93,11 @@ export function correctShortBoundaries(
 
   let safeStart = segments[safeFirstIndex].start;
   let safeEnd = Math.min(segments[safeLastIndex].end, physicalDurationSeconds);
-  const firstWord = segments[safeFirstIndex].words.find((word) => word.end > word.start);
+  const firstWord = (segments[safeFirstIndex].words ?? []).find((word) => word.end > word.start);
   if (firstWord && safeStart > firstWord.start && safeStart < firstWord.end) safeStart = firstWord.start;
   assertNotInsideWord(segments, safeFirstIndex, safeStart, 'start');
 
-  const lastWord = segments[safeLastIndex].words.filter((word) => word.end > word.start).at(-1);
+  const lastWord = (segments[safeLastIndex].words ?? []).filter((word) => word.end > word.start).at(-1);
   if (lastWord && safeEnd > lastWord.start && safeEnd < lastWord.end) safeEnd = lastWord.end;
   if (safeEnd > physicalDurationSeconds) safeEnd = physicalDurationSeconds;
   assertNotInsideWord(segments, safeLastIndex, safeEnd, 'end');
