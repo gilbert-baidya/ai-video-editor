@@ -3,6 +3,7 @@ import { productClient } from '../product-client.ts';
 import type { ExtractedShort } from '../features/shorts/shorts-model.ts';
 import type { ShortWorkflowState } from '../product-workflow.ts';
 import type { EditorSession } from './useEditorSession.ts';
+import { formatTimecode } from './editor-model.ts';
 import { CheckCircleIcon, DownloadIcon, FilmIcon, SparklesIcon } from './Icons.tsx';
 
 function ShortPreview({ src, short, rendered = false }: { src: string; short: ExtractedShort; rendered?: boolean }): React.ReactElement {
@@ -74,27 +75,51 @@ export const ShortsReviewScreen: React.FC<{
           const exported = state?.renderStatus === 'completed' && state.output?.qaStatus === 'PASS';
           const sourcePreviewAvailable = Number.isFinite(short.sourceStartSeconds) && Number.isFinite(short.sourceEndSeconds) && short.sourceEndSeconds > short.sourceStartSeconds;
           const outputUrl = productClient.shortOutputUrl(projectId, short.id);
-          return <article key={short.id} data-short-id={short.id} data-approval-status={state?.approvalStatus ?? 'pending'} data-render-status={state?.renderStatus ?? 'not-started'} style={{ background: 'var(--bg-surface-elevated)', border: `1px solid ${approved ? 'rgba(52,211,153,.45)' : 'var(--border-subtle)'}`, borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {exported ? <ShortPreview src={outputUrl} short={short} rendered /> : sourcePreviewAvailable ? <ShortPreview src={productClient.sourceUrl(projectId)} short={short} /> : <div style={{ aspectRatio: '9 / 16', display: 'grid', placeItems: 'center', background: '#050708', color: '#94A3B8' }}>Preview timestamps unavailable</div>}
-            <div style={{ padding: 16, borderTop: '1px solid var(--border-subtle)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
-                <div><small style={{ color: 'var(--text-muted)' }}>SHORT {index + 1}</small><h3 style={{ margin: '4px 0', fontSize: 16 }}>{short.title}</h3></div>
-                <span data-short-status style={{ color: status.color, fontSize: 12, fontWeight: 700 }}>{status.label}</span>
+          return <article key={short.id} data-short-id={short.id} data-approval-status={state?.approvalStatus ?? 'pending'} data-render-status={state?.renderStatus ?? 'not-started'} className="clip-review-card" style={{ flexDirection: 'column', gap: 0, padding: 0, border: `1px solid ${approved ? 'var(--border-accent)' : 'var(--border-subtle)'}`, boxShadow: approved ? '0 0 16px rgba(99, 102, 241, 0.2)' : 'none' }}>
+            <div style={{ position: 'relative', width: '100%', background: '#000', borderBottom: '1px solid var(--border-default)' }}>
+              {exported ? <ShortPreview src={outputUrl} short={short} rendered /> : sourcePreviewAvailable ? <ShortPreview src={productClient.sourceUrl(projectId)} short={short} /> : <div style={{ aspectRatio: '9 / 16', display: 'grid', placeItems: 'center', background: '#050708', color: '#94A3B8' }}>Preview timestamps unavailable</div>}
+              
+              <div style={{ position: 'absolute', top: 12, right: 12 }}>
+                 <span className="clip-score-badge"><SparklesIcon size={12} /> Viral Score: {short.viralScore}/10</span>
               </div>
-              <p style={{ margin: '8px 0', fontSize: 13, color: 'var(--text-muted)' }}>{short.subtitle}</p>
-              <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}><strong style={{ color: 'var(--text-primary)' }}>Why it works:</strong> {short.hookExplanation}</p>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)' }}>
-                <span><FilmIcon size={13} /> {short.durationEstimateSeconds.toFixed(1)}s</span>
-                <span style={{ color: '#34D399' }}><SparklesIcon size={12} /> {short.viralScore}/10</span>
-              </div>
-              {state?.error && <p role="alert" style={{ color: '#F87171', fontSize: 12 }}>{state.error}</p>}
-              {state?.output && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>{state.output.width}×{state.output.height} · {state.output.durationSeconds.toFixed(2)}s · QA {state.output.qaStatus}</p>}
             </div>
-            <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {!exported && <button type="button" data-action="approve-short" onClick={() => void session.reviewShort(short.id, true)} disabled={session.busy || approved} className="btn-secondary" style={{ flex: 1 }}>{approved ? 'Approved' : <><CheckCircleIcon size={14} /> Approve</>}</button>}
-              {!exported && <button type="button" data-action="reject-short" onClick={() => void session.reviewShort(short.id, false)} disabled={session.busy || state?.renderStatus === 'running'} className="btn-secondary">Reject</button>}
-              {!exported && <button type="button" data-action="export-short" onClick={() => void session.runStage('render', { shortId: short.id })} disabled={session.busy || !approved || state?.renderStatus === 'running'} className="btn-primary" style={{ flex: 1 }}>{state?.renderStatus === 'running' ? 'Rendering…' : 'Export Short'}</button>}
-              {exported && <a data-action="download-short" href={outputUrl} download={state.output?.fileName} className="btn-primary" style={{ flex: 1, textAlign: 'center', textDecoration: 'none' }}><DownloadIcon size={14} /> Download MP4</a>}
+            
+            <div style={{ padding: '20px 24px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: '8px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>{short.title}</h3>
+                <span data-short-status className={`status-badge ${approved ? 'completed' : state?.renderStatus === 'running' ? 'analyzing' : state?.approvalStatus === 'rejected' ? 'failed' : 'draft'}`} style={{ fontSize: '12px' }}>{status.label}</span>
+              </div>
+              <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-secondary)' }}>{short.subtitle}</p>
+              
+              <div style={{ background: 'var(--bg-sidebar)', borderRadius: '8px', padding: '14px', marginBottom: '20px', border: '1px solid var(--border-default)' }}>
+                <h4 style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}><SparklesIcon size={14} style={{ color: "var(--accent-primary)" }} /> Why this hook works</h4>
+                <p style={{ margin: 0, fontSize: '13.5px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{short.hookExplanation}</p>
+              </div>
+              
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
+                <span className="tag-pill"><FilmIcon size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /> {short.durationEstimateSeconds.toFixed(1)}s duration</span>
+                <span className="tag-pill">Source: {formatTimecode(short.sourceStartSeconds)} - {formatTimecode(short.sourceEndSeconds)}</span>
+              </div>
+              
+              {state?.error && <div style={{ background: 'rgba(239,68,68,0.1)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.2)', color: '#FCA5A5', fontSize: '13px', marginBottom: '16px' }}>{state.error}</div>}
+              {state?.output && <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginBottom: '16px' }}>Output: {state.output.width}×{state.output.height} · QA: {state.output.qaStatus}</div>}
+              
+              <div style={{ marginTop: 'auto', display: 'flex', gap: '10px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                {!exported && (
+                  <>
+                    <button type="button" data-action="approve-short" onClick={() => void session.reviewShort(short.id, true)} disabled={session.busy || approved} className={approved ? "btn-secondary" : "btn-primary"} style={{ flex: 1, padding: '10px', display: 'flex', justifyContent: 'center' }}>
+                      {approved ? 'Approved' : <><CheckCircleIcon size={16} style={{ marginRight: '6px' }} /> Approve</>}
+                    </button>
+                    <button type="button" data-action="reject-short" onClick={() => void session.reviewShort(short.id, false)} disabled={session.busy || state?.renderStatus === 'running' || approved} className="btn-secondary" style={{ padding: '10px 16px' }}>Reject</button>
+                  </>
+                )}
+                {!exported && approved && (
+                  <button type="button" data-action="export-short" onClick={() => void session.runStage('render', { shortId: short.id })} disabled={session.busy || state?.renderStatus === 'running'} className="btn-primary" style={{ flex: 1, padding: '10px' }}>
+                    {state?.renderStatus === 'running' ? 'Rendering…' : 'Export Short'}
+                  </button>
+                )}
+                {exported && <a data-action="download-short" href={outputUrl} download={state.output?.fileName} className="btn-primary" style={{ flex: 1, textAlign: 'center', textDecoration: 'none', padding: '10px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}><DownloadIcon size={16} /> Download MP4</a>}
+              </div>
             </div>
           </article>;
         })}
