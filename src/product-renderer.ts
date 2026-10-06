@@ -13,6 +13,7 @@ import { verifyAssetOnDisk } from './media-import.ts';
 import { SOURCE_DURATION_TOLERANCE_SECONDS, planEndSeconds, sourceDurationMismatchDiagnostic, validatePlanTiming } from './source-duration.ts';
 import { correctShortBoundaries } from './features/shorts/boundary-validator.ts';
 import type { ExtractedShort } from './features/shorts/shorts-model.ts';
+import { detectCaptionPlacement, type CaptionZone } from './caption-safe-area.ts';
 
 export function createRemotionRenderAdapter(appRoot: string): NonNullable<ProductStageAdapters['render']> {
   return async (record, sourcePath, outputPath, payload?: any) => {
@@ -126,6 +127,28 @@ export function createRemotionRenderAdapter(appRoot: string): NonNullable<Produc
       compositionId = 'BanglaShort';
       inputProps.sourceStartSeconds = shortStart;
       inputProps.sourceEndSeconds = shortEnd;
+      let captionPlacement: { zone: CaptionZone; fallbackUsed: boolean; reason: string };
+      try {
+        const ffmpegPath = 'path' in capabilities.ffmpeg && typeof capabilities.ffmpeg.path === 'string'
+          ? capabilities.ffmpeg.path
+          : 'ffmpeg';
+        captionPlacement = await detectCaptionPlacement(
+          ffmpegPath,
+          sourcePath,
+          shortStart,
+          shortEnd - shortStart,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`Caption safe-area analysis unavailable; using lower-zone fallback: ${message}`);
+        captionPlacement = {
+          zone: 'lower',
+          fallbackUsed: true,
+          reason: 'Automatic source analysis was unavailable; retained the standard lower caption zone.',
+        };
+      }
+      inputProps.captionZone = captionPlacement.zone;
+      console.log(`Caption safe area: ${captionPlacement.zone}${captionPlacement.fallbackUsed ? ' (fallback)' : ''}. ${captionPlacement.reason}`);
     }
     
     const composition = await selectComposition({ serveUrl, id: compositionId, inputProps });

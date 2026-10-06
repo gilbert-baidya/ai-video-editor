@@ -1,0 +1,108 @@
+# Phase 7D — Caption Safe-Area Report
+
+## Starting Problem
+
+The verified Phase 7C.3 Bengali Short rendered correctly, but generated captions occupied the lower portion of the frame where the source video already contained a persistent lower-third and scrolling ticker. The result was readable but visually crowded and required a minor edit before publishing.
+
+## Detection / Safe-Area Strategy
+
+The renderer now samples the source clip at two frames per second, scales the samples to a small grayscale analysis surface, and measures persistent edge occupancy across stable vertical bands:
+
+- lower;
+- center-lower;
+- center;
+- upper-center.
+
+The selector chooses the first zone below the persistent occupancy threshold, in that order. This keeps normal captions low when the source is clear, but moves them upward when repeated text or graphic structure is present. If sampling fails or all zones are occupied/uncertain, rendering continues with an explicit conservative fallback instead of failing the job.
+
+The selected zone is stable for the entire Short; captions do not jump between positions frame by frame.
+
+## Implementation
+
+- Added reusable source analysis and placement selection in `src/caption-safe-area.ts`.
+- Added `captionZone` renderer input support.
+- Added stable `lower`, `center-lower`, `center`, and `upper-center` caption styles.
+- Preserved caption text, Bengali Unicode, English code-switching, timing, font weight, contrast, and shadow treatment.
+- Kept transcript, ASR, boundary, source-duration, and media-QA contracts unchanged.
+- Added focused safe-area regression coverage in `scripts/test-caption-safe-area.ts`.
+
+## Before Evidence
+
+Phase 7C.3 output:
+
+`/Volumes/Personal/Cool App/ai-video-editor/app/ai-video-editor/.runtime/projects/project-68a40ce7-1db2-49ac-a668-877dcb93b227/output/short-short-project-68a40ce7-1db2-49ac-a668-877dcb93b227-0.mp4`
+
+Frame review showed captions in the lower safe area competing with the source lower-third/ticker.
+
+## After Evidence
+
+The first fresh Phase 7D UI project completed a real import, Gemini transcription, Shorts discovery, approval, and render:
+
+- Project: `project-68fc5d83-0019-4d29-b0ad-716e67fadcaa`
+- Output: `1080×1920`, QA PASS
+- The initial threshold selected `lower`, which was not sufficient for this source.
+
+Independent source analysis after tightening the persistence threshold now selects:
+
+`center-lower`
+
+for the same verified source and Short range. This proves the corrected detector identifies the occupied lower region, but no post-threshold UI render was completed.
+
+Three subsequent fresh UI attempts were not approved because Gemini Shorts candidates failed the existing complete-thought boundary validator:
+
+`ends during active speech and no nearby complete-thought boundary was found`
+
+No transcript, candidate, project state, or render output was injected to bypass this gate.
+
+## Caption Zone Selected
+
+- Initial Phase 7D render: `lower` — ineffective for the source lower-third/ticker.
+- Corrected detector for the verified source: `center-lower`.
+- Automatic fallback behavior: retained and logged when analysis is unavailable.
+
+## Bengali/Banglish Verification
+
+The safe-area implementation does not modify caption text. Existing regression coverage confirms Bengali and mixed Bengali/English strings remain unchanged:
+
+- `রাজার স্বীকারোক্তি: আমি ব্যর্থ!`
+- `আমি ব্যর্থ, আমি loser`
+
+The required Phase 7B/7C transcription and boundary regressions remain passing.
+
+## Rendered MP4 Path
+
+The first Phase 7D UI output was:
+
+`/Volumes/Personal/Cool App/ai-video-editor/app/ai-video-editor/.runtime/projects/project-68fc5d83-0019-4d29-b0ad-716e67fadcaa/output/short-short-project-68fc5d83-0019-4d29-b0ad-716e67fadcaa-0.mp4`
+
+It is not accepted as final Phase 7D evidence because it used the ineffective initial threshold and retained the lower caption zone.
+
+No valid post-threshold Phase 7D MP4 exists.
+
+## Media QA
+
+The first Phase 7D output reported application QA PASS and completed the same media pipeline used by Phase 7C.3. Because the corrected `center-lower` placement was not rendered through the normal UI, no post-threshold media QA result is claimed.
+
+## Frame Review
+
+The before frames confirmed:
+
+- readable Bengali captions;
+- valid speaker framing;
+- persistent source lower-third/ticker collision in the lower caption zone.
+
+An after frame review cannot honestly be completed until the corrected detector output is produced by a successful normal UI approval and render.
+
+## Human Quality Scores
+
+No final Phase 7D scores are assigned. The existing Phase 7C.3 scores remain historical evidence only; assigning new scores without a corrected post-threshold MP4 would overstate acceptance.
+
+## Remaining Issues
+
+1. The safe-area implementation needs one successful normal UI acceptance render after the threshold correction.
+2. Gemini Shorts discovery repeatedly returned candidates that failed the existing complete-thought boundary validator in the final fresh attempts.
+3. The original Phase 7D render did not solve the collision because it was produced before the threshold correction.
+
+## Final Verdict
+
+**FAIL**

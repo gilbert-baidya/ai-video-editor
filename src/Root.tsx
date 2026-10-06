@@ -5,6 +5,7 @@ import type { EditPlan, GraphicRegion, MediaAsset } from './contracts.ts';
 import { positionStyle } from './speaker-framing.ts';
 import { resolvedOperationFontSize } from './render-presentation.ts';
 import { defaultVideoFormatProfile, type VideoFormatProfile } from './video-format.ts';
+import type { CaptionZone } from './caption-safe-area.ts';
 
 export interface FoundationProps extends Record<string, unknown> {
   sourcePath: string;
@@ -13,6 +14,7 @@ export interface FoundationProps extends Record<string, unknown> {
   durationSeconds?: number;
   mediaAssets?: MediaAsset[];
   videoFormat?: VideoFormatProfile;
+  captionZone?: CaptionZone;
 }
 
 function regionStyle(region: GraphicRegion | undefined): React.CSSProperties {
@@ -78,7 +80,14 @@ export interface ShortProps extends FoundationProps {
   sourceEndSeconds: number;
 }
 
-export const ShortComposition: React.FC<ShortProps> = ({ sourcePath, editPlan, graphicFontSize, mediaAssets = [], videoFormat = defaultVideoFormatProfile(), sourceStartSeconds, sourceEndSeconds }) => {
+function captionZoneStyle(zone: CaptionZone): React.CSSProperties {
+  if (zone === 'center-lower') return { top: 1050 };
+  if (zone === 'center') return { top: 760 };
+  if (zone === 'upper-center') return { top: 470 };
+  return { bottom: 200 };
+}
+
+export const ShortComposition: React.FC<ShortProps> = ({ sourcePath, editPlan, graphicFontSize, mediaAssets = [], videoFormat = defaultVideoFormatProfile(), sourceStartSeconds, sourceEndSeconds, captionZone = 'lower' }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const seconds = sourceStartSeconds + (frame / fps); // Map local timeline to global source seconds
@@ -91,7 +100,7 @@ export const ShortComposition: React.FC<ShortProps> = ({ sourcePath, editPlan, g
   return (
     <AbsoluteFill style={{ backgroundColor: '#101820', fontFamily: 'Noto Sans Bengali, sans-serif' }}>
       <Video src={staticFile(sourcePath)} startFrom={sourceStartFrames} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: pastorOpacity, ...positionStyle(speakerPosition) }} />
-      {caption?.type === 'caption' && <div style={{ position: 'absolute', left: 40, right: 40, bottom: 200, color: '#fff', fontSize: 56, textAlign: 'center', textShadow: '0 3px 10px #000', fontWeight: 800 }}>{caption.text}</div>}
+      {caption?.type === 'caption' && <div style={{ position: 'absolute', left: 64, right: 64, ...captionZoneStyle(captionZone), color: '#fff', fontSize: 56, lineHeight: 1.15, textAlign: 'center', textShadow: '0 3px 10px #000', fontWeight: 800 }}>{caption.text}</div>}
     </AbsoluteFill>
   );
 };
