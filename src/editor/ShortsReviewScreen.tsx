@@ -127,6 +127,7 @@ export const ShortsReviewScreen: React.FC<{
                     {state?.renderStatus === 'running' ? 'Rendering…' : 'Export Short'}
                   </button>
                 )}
+                {exported && approved && <button type="button" data-action="rerender-short" onClick={() => void session.rerenderShort(short.id, 'Phase 7D.1 smart caption safe-area controlled rerender')} disabled={session.busy} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>Re-export Short</button>}
                 {exported && <a data-action="download-short" href={outputUrl} download={state.output?.fileName} className="btn-primary" style={{ flex: 1, textAlign: 'center', textDecoration: 'none', padding: '10px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}><DownloadIcon size={16} /> Download MP4</a>}
               </div>
             </div>

@@ -25,6 +25,7 @@ export interface EditorSession {
   act: (beatId: string, action: ReviewAction, options?: { operation?: EditOperation; displayText?: string; reason?: string }) => Promise<void>;
   runStage: (stage: ProductStage, payload?: any) => Promise<void>;
   rerender: (reason: string) => Promise<void>;
+  rerenderShort: (shortId: string, reason: string) => Promise<void>;
   reviewShort: (shortId: string, approved: boolean) => Promise<void>;
   importAsset: (input: ImportInput) => Promise<void>;
   clearError: () => void;
@@ -33,7 +34,7 @@ export interface EditorSession {
 const message = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
 const finished = (job: ProductJob): boolean => ['completed', 'failed', 'cancelled', 'interrupted'].includes(job.status);
 
-type Client = EditorClient & Pick<typeof productClient, 'startStage' | 'saveReview' | 'rerender' | 'reviewShort' | 'importAsset'>;
+type Client = EditorClient & Pick<typeof productClient, 'startStage' | 'saveReview' | 'rerender' | 'rerenderShort' | 'reviewShort' | 'importAsset'>;
 
 // Single owner of one project's loaded data, human review state and backend actions. Views stay presentational.
 export function useEditorSession(projectId: string | undefined, client: Client = productClient): EditorSession {
@@ -150,6 +151,12 @@ export function useEditorSession(projectId: string | undefined, client: Client =
     await reload();
   }), [client, guarded, projectId, reload, track]);
 
+  const rerenderShort = useCallback<EditorSession['rerenderShort']>((shortId, reason) => guarded(async () => {
+    if (!projectId) return;
+    await track(await client.rerenderShort(projectId, shortId, reason));
+    await reload();
+  }), [client, guarded, projectId, reload, track]);
+
   const reviewShort = useCallback<EditorSession['reviewShort']>((shortId, approved) => guarded(async () => {
     if (!projectId) return;
     setProject(await client.reviewShort(projectId, shortId, approved));
@@ -162,5 +169,5 @@ export function useEditorSession(projectId: string | undefined, client: Client =
     await reload();
   }), [client, guarded, projectId, reload]);
 
-  return { phase, project, workspace, review, resolved, message: text, saving, busy, actionError, reload, saveReviewState, act, runStage, rerender, reviewShort, importAsset, clearError: () => setActionError('') };
+  return { phase, project, workspace, review, resolved, message: text, saving, busy, actionError, reload, saveReviewState, act, runStage, rerender, rerenderShort, reviewShort, importAsset, clearError: () => setActionError('') };
 }

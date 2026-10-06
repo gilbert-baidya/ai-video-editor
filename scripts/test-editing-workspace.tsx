@@ -159,7 +159,7 @@ assert.deepEqual(selectedCards(reviewDefault), ['0:51—1:12'], 'without initial
 // ── Session fixtures for views ───────────────────────────────────
 const session = (overrides: Partial<EditorSession>): EditorSession => ({
   phase: 'ready', project: projectRecord(), workspace, review, resolved: updateReview(workspace, review), saving: false, busy: false, actionError: '',
-  reload: async () => undefined, saveReviewState: async () => undefined, act: async () => undefined, runStage: async () => undefined, rerender: async () => undefined, reviewShort: async () => undefined, importAsset: async () => undefined, clearError: () => undefined, ...overrides,
+  reload: async () => undefined, saveReviewState: async () => undefined, act: async () => undefined, runStage: async () => undefined, rerender: async () => undefined, rerenderShort: async () => undefined, reviewShort: async () => undefined, importAsset: async () => undefined, clearError: () => undefined, ...overrides,
 });
 const view = (overrides: Partial<WorkspaceViewProps> & { session?: EditorSession } = {}) => renderToStaticMarkup(<EditingWorkspaceView session={overrides.session ?? session({})} time={30} seekToken={0} playing={false} pixelsPerSecond={12} rightTab="director" layout={{ left: 240, right: 340, timeline: 300 }} viewport={{ width: 1440, height: 900 }} onLayout={() => undefined} onLayoutReset={() => undefined} handlers={noHandlers} {...overrides} />);
 

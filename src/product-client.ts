@@ -54,6 +54,12 @@ export const productClient = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reason }),
     })).job,
+  rerenderShort: async (projectId: string, shortId: string, reason: string) =>
+    (await request<{ job: ProductJob }>(`/api/projects/${projectId}/rerender-short`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shortId, reason }),
+    })).job,
   importAsset: (projectId: string, input: { path: string; description: string; rightsStatus: 'approved' | 'unknown' | 'restricted'; rightsBasis: 'owned' | 'permission' | 'generated' | 'public-domain' | 'licensed' | 'unknown'; rightsNote?: string }) =>
     request<MediaAsset>(`/api/projects/${projectId}/assets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }),
   sourceUrl: (projectId: string) => `/api/projects/${projectId}/source`,

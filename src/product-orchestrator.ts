@@ -281,6 +281,48 @@ export class ProductOrchestrator {
     return this.startStage(projectId, 'render');
   }
 
+  async rerenderShort(projectId: string, shortId: string, reason: string): Promise<ProductJob> {
+    if ([...this.running.keys()].some((key) => key.startsWith(`${projectId}:`))) {
+      throw new Error('A stage is already running for this project.');
+    }
+    const record = await this.store.get(projectId);
+    const { short } = await this.loadShortCandidate(record, shortId);
+    const state = record.workflow.shorts?.[short.id];
+    if (state?.approvalStatus !== 'approved') throw new Error('Re-render requires an approved Short.');
+    if (state.renderStatus !== 'completed' || state.output?.qaStatus !== 'PASS' || !state.artifactPath) {
+      throw new Error('Re-render requires a previously completed Short export with passing QA.');
+    }
+    await this.assertStageReady(record, 'render', { shortId });
+    const projectDirectory = this.store.projectDirectory(projectId);
+    const currentOutput = resolve(projectDirectory, state.artifactPath);
+    if (!(await access(currentOutput).then(() => true, () => false))) {
+      throw new Error('The previous Short output is missing; re-render cannot preserve the before artifact.');
+    }
+    const revisionDirectory = resolve(projectDirectory, 'output/revisions');
+    await mkdir(revisionDirectory, { recursive: true });
+    const archivedOutputPath = `output/revisions/short-${shortId}.${Date.now()}.mp4`;
+    await copyFile(currentOutput, resolve(projectDirectory, archivedOutputPath));
+    const now = new Date().toISOString();
+    const shorts = {
+      ...(record.workflow.shorts ?? {}),
+      [shortId]: {
+        ...state,
+        renderStatus: 'not-started' as const,
+        artifactPath: undefined,
+        qa: undefined,
+        output: undefined,
+        error: undefined,
+        updatedAt: now,
+        completedAt: undefined,
+      },
+    };
+    await this.store.save({
+      ...record,
+      workflow: { ...record.workflow, shorts, updatedAt: now },
+    });
+    return this.startStage(projectId, 'render', { shortId });
+  }
+
   async reviewShort(projectId: string, shortId: string, approved: boolean): Promise<ProductProjectRecord> {
     const record = await this.store.get(projectId);
     if (record.workflow.outputTarget !== 'shorts') throw new Error('This project is not a Shorts project.');
